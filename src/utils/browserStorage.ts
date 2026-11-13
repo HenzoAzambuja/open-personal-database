@@ -131,9 +131,11 @@ export function getPendingParent() {
 }
 
 export function setRoot(handle: WikiRoot) {
-  wikiRoot = handle;
-  imageUrls.forEach(URL.revokeObjectURL);
-  imageUrls.clear();
+  if (wikiRoot !== handle) {
+    wikiRoot = handle;
+    imageUrls.forEach(URL.revokeObjectURL);
+    imageUrls.clear();
+  }
 }
 
 export function getRoot() {
@@ -144,8 +146,33 @@ export function rootName() {
   return wikiRoot?.name || "Wiki";
 }
 
-export function getAssetUrl(path: string) {
-  return imageUrls.get(path.replace(/^\.\//, "")) || path;
+export async function getAssetBlobUrl(path: string): Promise<string> {
+  return assetUrl(path);
+}
+
+export function getAssetUrl(path: string): string {
+  if (!path) return "";
+  const clean = path.trim().replace(/^\.?\//, "").replace(/\\/g, "/");
+  const withoutAssets = clean.replace(/^assets\//i, "");
+
+  // 1. Busca exata
+  if (imageUrls.has(clean)) return imageUrls.get(clean)!;
+  if (imageUrls.has(`assets/${clean}`)) return imageUrls.get(`assets/${clean}`)!;
+  if (imageUrls.has(`assets/${withoutAssets}`)) return imageUrls.get(`assets/${withoutAssets}`)!;
+  if (imageUrls.has(withoutAssets)) return imageUrls.get(withoutAssets)!;
+
+  // 2. Busca case-insensitive
+  const lowerClean = clean.toLowerCase();
+  const lowerWithout = withoutAssets.toLowerCase();
+  for (const [key, val] of imageUrls.entries()) {
+    const k = key.toLowerCase();
+    const kw = k.replace(/^assets\//i, "");
+    if (k === lowerClean || k === `assets/${lowerClean}` || kw === lowerWithout) {
+      return val;
+    }
+  }
+
+  return path;
 }
 
 function cleanPart(part: string) {
@@ -492,38 +519,171 @@ export async function exportOpd() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+export async function listAssets(): Promise<{ path: string; name: string; url: string }[]> {
+  if (!wikiRoot) return [];
+  const results: { path: string; name: string; url: string }[] = [];
+  const imageRegex = /\.(png|jpe?g|webp|gif|svg|avif)$/i;
+
+  if (isIndexedDbRoot(wikiRoot)) {
+    const files = await getStoredFiles(wikiRoot);
+    for (const file of files) {
+      if (file.path.startsWith("assets/") && imageRegex.test(file.path)) {
+        let url = imageUrls.get(file.path);
+        if (!url) {
+          url = URL.createObjectURL(new Blob([file.data], { type: file.type }));
+          imageUrls.set(file.path, url);
+        }
+        results.push({
+          path: file.path,
+          name: file.path.replace(/^assets\//, ""),
+          url,
+        });
+      }
+    }
+    return results.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  try {
+    const assetsHandle = await wikiRoot.getDirectoryHandle("assets");
+    for await (const [name, handle] of directoryEntries(assetsHandle)) {
+      if (handle.kind === "file" && imageRegex.test(name)) {
+        const filePath = `assets/${name}`;
+        let url = imageUrls.get(filePath);
+        if (!url) {
+          const file = await (handle as FileSystemFileHandle).getFile();
+          url = URL.createObjectURL(file);
+          imageUrls.set(filePath, url);
+        }
+        results.push({
+          path: filePath,
+          name,
+          url,
+        });
+      }
+    }
+  } catch {
+    // Pasta assets pode não existir ainda
+  }
+
+  return results.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function preloadAssets(): Promise<void> {
+  await listAssets();
+}
+
+function getMimeType(path: string): string {
+  const ext = path.split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'md':
+    case 'markdown':
+    case 'txt':
+      return 'text/markdown';
+    case 'png':
+      return 'image/png';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'webp':
+      return 'image/webp';
+    case 'gif':
+      return 'image/gif';
+    case 'svg':
+      return 'image/svg+xml';
+    case 'json':
+      return 'application/json';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
 export async function importOpd(): Promise<WikiRoot | null> {
-  const destination = isFileSystemAccessSupported() ? await chooseWikiDirectory() as DirHandle | null : null;
-  if (isFileSystemAccessSupported() && !destination) return null;
   const picker = document.createElement("input");
   picker.type = "file";
   picker.accept = ".opd,.zip,application/zip";
+  picker.style.display = "none";
+  document.body.appendChild(picker);
+
   const file = await new Promise<File | null>(resolve => {
-    picker.onchange = () => resolve(picker.files?.[0] || null);
+    picker.onchange = () => {
+      const selected = picker.files?.[0] || null;
+      picker.remove();
+      resolve(selected);
+    };
+    picker.oncancel = () => {
+      picker.remove();
+      resolve(null);
+    };
     picker.click();
   });
+
   if (!file) return null;
-  const entries = await unzipSync(new Uint8Array(await file.arrayBuffer()));
-  const base = file.name.replace(/\.(opd|zip)$/i, "").replace(/[\\/:*?"<>|]/g, "_") || "Wiki importada";
-  const root: WikiRoot = destination
-    ? await destination.getDirectoryHandle(base, { create: true })
-    : await createStoredWiki(base);
+
+  const arrayBuf = await file.arrayBuffer();
+  const entries = await unzipSync(new Uint8Array(arrayBuf));
+  const base = file.name.replace(/\.(opd|zip)$/i, "").replace(/[\\/:*?"<>|]/g, "_").trim() || "Wiki importada";
+
+  // Cria a wiki persistente no armazenamento IndexedDB
+  const root = await createStoredWiki(base);
   setRoot(root);
+
+  // Normalização de caminhos (caso o pacote .opd tenha sido compactado dentro de uma pasta mãe única)
+  const rawKeys = Object.keys(entries).map(k => k.replace(/\\/g, "/").replace(/^\/+/, ""));
+  const segmentsList = rawKeys.map(k => k.split("/"));
+  const commonPrefix = (segmentsList.length > 0 && segmentsList.every(s => s.length > 1 && s[0] === segmentsList[0][0]) && segmentsList[0][0].toLowerCase() !== "assets")
+    ? segmentsList[0][0] + "/"
+    : "";
+
+  let hasImportedInicio = false;
+  let hasAnyMarkdown = false;
+
   for (const [rawPath, data] of Object.entries(entries)) {
-    const path = rawPath.replace(/\\/g, "/").replace(/^\/+/, "");
-    if (!path || path.split("/").some(part => !part || part === "." || part === "..")) continue;
-    if (isIndexedDbRoot(root)) {
-      await writeStoredFile(root, path, data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), path.startsWith("assets/") ? "application/octet-stream" : "text/markdown");
-      continue;
+    let path = rawPath.replace(/\\/g, "/").replace(/^\/+/, "");
+    if (commonPrefix && path.startsWith(commonPrefix)) {
+      path = path.slice(commonPrefix.length);
     }
-    const segments = path.split("/");
-    const filename = segments.pop()!;
-    let dir = root;
-    for (const segment of segments) dir = await dir.getDirectoryHandle(segment, { create: true });
-    const fileHandle = await dir.getFileHandle(filename, { create: true });
-    const writer = await fileHandle.createWritable();
-    await writer.write(data);
-    await writer.close();
+    if (!path || path.endsWith("/")) continue;
+
+    // Proteção contra path traversal e caminhos inválidos
+    const pathParts = path.split("/").filter(Boolean);
+    if (pathParts.some(p => p === "." || p === "..")) continue;
+
+    const mimeType = getMimeType(path);
+    const sliceBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+
+    if (/\.md$/i.test(path)) {
+      hasAnyMarkdown = true;
+    }
+    if (path.toLowerCase() === "início.md" || path.toLowerCase() === "inicio.md") {
+      hasImportedInicio = true;
+    }
+
+    if (isIndexedDbRoot(root)) {
+      await writeStoredFile(root, path, sliceBuffer, mimeType);
+    } else {
+      const filename = pathParts.pop()!;
+      let dir = root as DirHandle;
+      for (const segment of pathParts) {
+        dir = await dir.getDirectoryHandle(segment, { create: true });
+      }
+      const fileHandle = await dir.getFileHandle(filename, { create: true });
+      const writer = await fileHandle.createWritable();
+      await writer.write(sliceBuffer);
+      await writer.close();
+    }
   }
+
+  // Se o pacote importado tem outras páginas markdown e não possui "Início.md", remove o placeholder inicial
+  if (hasAnyMarkdown && !hasImportedInicio) {
+    try {
+      await removePath("Início.md");
+    } catch {
+      // Ignora caso não exista
+    }
+  }
+
+  // Pré-carrega todos os assets da wiki importada para acesso imediato no renderizador
+  await preloadAssets();
+
   return root;
 }

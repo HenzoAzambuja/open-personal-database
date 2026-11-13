@@ -27,6 +27,7 @@ export function App() {
     navigateToPageByName,
     setSearchQuery,
     insertImage,
+    enableEditing,
   } = useWiki();
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -116,6 +117,8 @@ export function App() {
           activeFileTitle={state.activeFileTitle}
           content={state.activeFileContent}
           isDirty={state.isDirty}
+          isReadOnly={state.isReadOnly}
+          onEnableEditing={enableEditing}
           onContentChange={updateContent}
           onSave={() => saveCurrentPage()}
           onNavigateWikiLink={navigateToPageByName}

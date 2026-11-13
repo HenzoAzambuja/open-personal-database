@@ -23,5 +23,6 @@ export interface WikiState {
   isLoading: boolean;
   searchQuery: string;
   metadata: WikiMetadata | null;
+  isReadOnly?: boolean;
 }
 

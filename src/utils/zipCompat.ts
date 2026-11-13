@@ -1,9 +1,23 @@
-// ZIP mínimo compatível com pacotes .opd: grava entradas sem compressão e lê ZIPs armazenados/deflate.
-const encoder = new TextEncoder(); const decoder = new TextDecoder();
-export const strToU8 = (s: string) => encoder.encode(s);
-function u16(v:number){return new Uint8Array([v&255,(v>>>8)&255]);} function u32(v:number){return new Uint8Array([v&255,(v>>>8)&255,(v>>>16)&255,(v>>>24)&255]);}
-function concat(parts:Uint8Array[]){const size=parts.reduce((n,p)=>n+p.length,0);const out=new Uint8Array(size);let o=0;for(const p of parts){out.set(p,o);o+=p.length;}return out;}
-function crc32(data:Uint8Array){let c=0xffffffff;for(const b of data){c^=b;for(let k=0;k<8;k++)c=(c>>>1)^((c&1)?0xedb88320:0);}return (c^0xffffffff)>>>0;}
-export function zipSync(files:Record<string,Uint8Array>){const locals:Uint8Array[]=[];const centrals:Uint8Array[]=[];let offset=0;for(const [name,data] of Object.entries(files)){const n=encoder.encode(name),crc=crc32(data);const local=concat([u32(0x04034b50),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(data.length),u32(data.length),u16(n.length),u16(0),n,data]);locals.push(local);centrals.push(concat([u32(0x02014b50),u16(20),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(data.length),u32(data.length),u16(n.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(offset),n]));offset+=local.length;}const central=concat(centrals);return concat([...locals,central,u32(0x06054b50),u16(0),u16(0),u16(centrals.length),u16(centrals.length),u32(central.length),u32(offset),u16(0)]);}
-function read16(b:Uint8Array,o:number){return b[o]|b[o+1]<<8;} function read32(b:Uint8Array,o:number){return (b[o]|b[o+1]<<8|b[o+2]<<16|b[o+3]<<24)>>>0;}
-export async function unzipSync(b:Uint8Array):Promise<Record<string,Uint8Array>>{const out:Record<string,Uint8Array>={};let eocd=-1;for(let i=b.length-22;i>=Math.max(0,b.length-65557);i--){if(read32(b,i)===0x06054b50){eocd=i;break;}}if(eocd<0)throw new Error('Arquivo .opd inválido: diretório ZIP não encontrado.');const count=read16(b,eocd+10);let p=read32(b,eocd+16);for(let i=0;i<count;i++){if(read32(b,p)!==0x02014b50)throw new Error('Entrada ZIP inválida.');const method=read16(b,p+10),size=read32(b,p+20),nl=read16(b,p+28),el=read16(b,p+30),cl=read16(b,p+32),lo=read32(b,p+42);const name=decoder.decode(b.slice(p+46,p+46+nl));const lnl=read16(b,lo+26),lel=read16(b,lo+28),start=lo+30+lnl+lel;const data=b.slice(start,start+size);if(name && !name.endsWith('/')){if(method===0)out[name]=data;else if(method===8){const DS=(globalThis as any).DecompressionStream;if(!DS)throw new Error('Este navegador não consegue descompactar este .opd. Use Chrome ou Edge atualizado.');/* @ts-ignore */ const stream=new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw')); out[name]=new Uint8Array(await new Response(stream).arrayBuffer());}else throw new Error(`Método de compressão ZIP não suportado: ${method}`);}p+=46+nl+el+cl;}return out;}
+import { unzipSync as fflateUnzipSync, zipSync as fflateZipSync } from "fflate";
+
+export const strToU8 = (s: string) => new TextEncoder().encode(s);
+
+export function zipSync(files: Record<string, Uint8Array>): Uint8Array {
+  return fflateZipSync(files, { level: 6 });
+}
+
+export async function unzipSync(b: Uint8Array): Promise<Record<string, Uint8Array>> {
+  try {
+    const unzipped = fflateUnzipSync(b);
+    const result: Record<string, Uint8Array> = {};
+    for (const [key, val] of Object.entries(unzipped)) {
+      if (!key.endsWith("/")) {
+        result[key] = val;
+      }
+    }
+    return result;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Falha ao descompactar pacote .opd: ${msg}`);
+  }
+}

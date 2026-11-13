@@ -1,5 +1,7 @@
-import React, { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import { parseFandomMarkdown } from "../utils/fandomParser";
+import { preloadAssets } from "../utils/browserStorage";
+import { AssetBrowserModal } from "./AssetBrowserModal";
 import {
   Save,
   BookOpen,
@@ -27,6 +29,9 @@ import {
   X,
   Clock,
   FileText,
+  Lock,
+  Unlock,
+  FolderOpen,
 } from "lucide-react";
 
 interface EditorProps {
@@ -35,6 +40,8 @@ interface EditorProps {
   activeFileTitle: string | null;
   content: string;
   isDirty: boolean;
+  isReadOnly?: boolean;
+  onEnableEditing?: () => void;
   onContentChange: (newContent: string) => void;
   onSave: () => void;
   onNavigateWikiLink: (pageName: string) => void;
@@ -51,6 +58,8 @@ export const Editor: React.FC<EditorProps> = ({
   activeFileTitle,
   content,
   isDirty,
+  isReadOnly = false,
+  onEnableEditing,
   onContentChange,
   onSave,
   onNavigateWikiLink,
@@ -58,16 +67,24 @@ export const Editor: React.FC<EditorProps> = ({
   onOpenCreateWiki,
   onInsertImage,
 }) => {
-  // Modo padrão "preview" (Artigo Fandom) para uma experiência de wiki completa
-  const [viewMode, setViewMode] = useState<ViewMode>("split");
+  // Se for somente leitura, o modo padrão é preview
+  const [viewMode, setViewMode] = useState<ViewMode>(isReadOnly ? "preview" : "split");
   const [isTocOpen, setIsTocOpen] = useState(true);
   const [selectedLightboxImage, setSelectedLightboxImage] = useState<string | null>(null);
+  const [isAssetBrowserOpen, setIsAssetBrowserOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Parser customizado do Fandom com suporte a Infoboxes, Quotes, Notices, Galerias e WikiLinks
+  const [assetVersion, setAssetVersion] = useState(0);
+
+  // Garante que todas as imagens de /assets estejam carregadas e sincronizadas com blob URLs
+  useEffect(() => {
+    preloadAssets().then(() => setAssetVersion(v => v + 1));
+  }, [currentWikiPath, activeFilePath]);
+
+  // Parser customizado do Fandom com suporte a Infoboxes, Quotes, Notices, Galerias, Colunas (Seções Verticais) e WikiLinks
   const { html: renderedHtml, toc } = useMemo(() => {
     return parseFandomMarkdown(content, currentWikiPath || null);
-  }, [content, currentWikiPath]);
+  }, [content, currentWikiPath, assetVersion]);
 
   // Estatísticas do artigo (contagem de palavras e tempo de leitura)
   const stats = useMemo(() => {
@@ -101,6 +118,7 @@ export const Editor: React.FC<EditorProps> = ({
 
   // Funções de auxílio para inserção de Markdown na posição do cursor
   const insertTextAtCursor = (prefix: string, suffix = "", defaultText = "") => {
+    if (isReadOnly) return;
     const textarea = textareaRef.current;
     if (!textarea) return;
 
@@ -126,14 +144,12 @@ export const Editor: React.FC<EditorProps> = ({
     }, 0);
   };
 
-  // Inserir Imagem nativa
-  const handleInsertImage = async () => {
-    if (!onInsertImage) return;
-    const relativePath = await onInsertImage();
-    if (relativePath) {
-      const imgMarkdown = `\n![Legenda da Imagem](${relativePath})\n`;
-      insertTextAtCursor(imgMarkdown);
-    }
+  // Inserir Imagem selecionada da galeria /assets
+  const handleSelectAsset = (assetPath: string) => {
+    const filename = assetPath.split("/").pop() || "Imagem";
+    const cleanName = filename.replace(/\.[^.]+$/, "");
+    const imgMarkdown = `\n![${cleanName}](${assetPath})\n`;
+    insertTextAtCursor(imgMarkdown);
   };
 
   // Inserir Template de Infobox Fandom
@@ -141,8 +157,8 @@ export const Editor: React.FC<EditorProps> = ({
     const defaultTitle = activeFileTitle || "Título do Artigo";
     const template = `\n:::infobox
 title: ${defaultTitle}
-image:
-caption:
+image: assets/foto.png
+caption: Legenda da imagem
 [Informações Gerais]
 Nome: ${defaultTitle}
 Tipo: Personagem / Conceito
@@ -182,6 +198,19 @@ assets/foto2.png | Arte Promocional
     insertTextAtCursor(template);
   };
 
+  // Inserir Bloco de Seções Verticais (Máx 4 colunas dividindo a página na horizontal)
+  const handleInsertSection = () => {
+    const template = `\n:::columns
+:::col titulo="Coluna 1"
+Conteúdo da primeira coluna vertical. Você pode colocar texto, imagens ou tópicos aqui.
+
+:::col titulo="Coluna 2"
+Conteúdo da segunda coluna vertical dividindo a tela.
+:::
+\n`;
+    insertTextAtCursor(template);
+  };
+
   if (!activeFilePath) {
     if (!currentWikiPath) {
       return (
@@ -218,6 +247,9 @@ assets/foto2.png | Arte Promocional
               • <strong>Imagens e Galerias:</strong> Importe fotos diretamente para a pasta <code className="bg-slate-800 text-indigo-300 px-1 py-0.5 rounded">/assets</code> da wiki.
             </div>
             <div>
+              • <strong>Seções Modulares (até 4):</strong> Organize seu artigo em blocos visuais destacados com <code className="bg-slate-800 text-indigo-300 px-1 py-0.5 rounded">:::section</code>.
+            </div>
+            <div>
               • <strong>Caixas de Aviso e Citações:</strong> Crie avisos de spoiler e frases de destaque com formatação temática.
             </div>
             <div>
@@ -239,13 +271,15 @@ assets/foto2.png | Arte Promocional
         <p className="text-xs text-slate-400 max-w-sm mb-6 leading-relaxed">
           Selecione uma página na barra lateral para ler ou editar, ou crie uma nova entrada para a sua wiki.
         </p>
-        <button
-          onClick={onCreatePage}
-          className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 rounded-lg transition shadow-md shadow-indigo-600/20"
-        >
-          <Plus className="w-4 h-4" />
-          Criar Novo Artigo
-        </button>
+        {!isReadOnly && (
+          <button
+            onClick={onCreatePage}
+            className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 rounded-lg transition shadow-md shadow-indigo-600/20"
+          >
+            <Plus className="w-4 h-4" />
+            Criar Novo Artigo
+          </button>
+        )}
 
         <div className="mt-12 p-4 bg-slate-900/60 border border-slate-800/80 rounded-xl max-w-md text-left text-xs text-slate-400 space-y-2">
           <div className="font-semibold text-slate-300">💡 Dicas de Edição Fandom:</div>
@@ -253,7 +287,7 @@ assets/foto2.png | Arte Promocional
             • Clique no botão <strong>Infobox</strong> para adicionar fichas de personagens e tópicos.
           </div>
           <div>
-            • Use o botão <strong>Inserir Imagem</strong> para salvar ilustrações automaticamente na sua wiki.
+            • Use o botão <strong>Puxar Imagem (/assets)</strong> para reutilizar imagens já presentes.
           </div>
           <div>
             • Conecte suas notas com <code className="bg-slate-800 text-indigo-300 px-1 py-0.5 rounded">[[Nome da Página]]</code>.
@@ -265,6 +299,30 @@ assets/foto2.png | Arte Promocional
 
   return (
     <main className="flex-1 bg-slate-950 flex flex-col overflow-hidden h-full">
+      {/* Banner de Modo Somente Leitura (Estilo Word Protected View) */}
+      {isReadOnly && (
+        <div className="bg-amber-950/80 border-b border-amber-800/80 px-4 py-2 flex items-center justify-between text-xs text-amber-200 shrink-0">
+          <div className="flex items-center gap-2">
+            <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>
+              <strong>Modo de Exibição Protegida:</strong> Este pacote .opd foi importado em modo somente leitura.
+            </span>
+          </div>
+          {onEnableEditing && (
+            <button
+              onClick={() => {
+                onEnableEditing();
+                setViewMode("split");
+              }}
+              className="flex items-center gap-1.5 px-3 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg font-bold text-xs transition shadow-sm"
+            >
+              <Unlock className="w-3.5 h-3.5" />
+              <span>Habilitar Edição</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Barra de Navegação de Artigo (Estilo Fandom Tabs) */}
       <div className="h-14 bg-slate-900/95 border-b border-slate-800/80 px-4 flex items-center justify-between shrink-0 gap-4">
         {/* Título e Metadados do Artigo */}
@@ -277,7 +335,11 @@ assets/foto2.png | Arte Promocional
               <h1 className="text-sm font-bold text-slate-100 truncate">
                 {activeFileTitle || "Sem título"}
               </h1>
-              {isDirty ? (
+              {isReadOnly ? (
+                <span className="text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-medium flex items-center gap-1">
+                  <Lock className="w-2.5 h-2.5" /> Somente Leitura
+                </span>
+              ) : isDirty ? (
                 <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-medium">
                   Não salvo
                 </span>
@@ -311,60 +373,81 @@ assets/foto2.png | Arte Promocional
               <BookOpen className="w-3.5 h-3.5" />
               <span>Artigo</span>
             </button>
-            <button
-              onClick={() => setViewMode("edit")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
-                viewMode === "edit"
-                  ? "bg-gradient-to-r from-indigo-600 to-indigo-500 text-white shadow-sm"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-              title="Editar Código Markdown"
-            >
-              <Edit3 className="w-3.5 h-3.5" />
-              <span>Editar</span>
-            </button>
-            <button
-              onClick={() => setViewMode("split")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
-                viewMode === "split"
-                  ? "bg-gradient-to-r from-indigo-600 to-indigo-500 text-white shadow-sm"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-              title="Lado a Lado (Split View)"
-            >
-              <Columns className="w-3.5 h-3.5" />
-              <span>Dividido</span>
-            </button>
+            {!isReadOnly && (
+              <>
+                <button
+                  onClick={() => setViewMode("edit")}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
+                    viewMode === "edit"
+                      ? "bg-gradient-to-r from-indigo-600 to-indigo-500 text-white shadow-sm"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                  title="Editar Código Markdown"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>Editar</span>
+                </button>
+                <button
+                  onClick={() => setViewMode("split")}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
+                    viewMode === "split"
+                      ? "bg-gradient-to-r from-indigo-600 to-indigo-500 text-white shadow-sm"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                  title="Lado a Lado (Split View)"
+                >
+                  <Columns className="w-3.5 h-3.5" />
+                  <span>Dividido</span>
+                </button>
+              </>
+            )}
           </div>
 
           {/* Botão de Salvar */}
-          <button
-            onClick={onSave}
-            disabled={!isDirty}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-xl transition shadow-sm ${
-              isDirty
-                ? "bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white shadow-indigo-600/30"
-                : "bg-slate-800 text-slate-500 border border-slate-700/40 cursor-default"
-            }`}
-            title="Salvar alterações (Ctrl+S)"
-          >
-            <Save className="w-3.5 h-3.5" />
-            <span>Salvar</span>
-          </button>
+          {!isReadOnly && (
+            <button
+              onClick={onSave}
+              disabled={!isDirty}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-xl transition shadow-sm ${
+                isDirty
+                  ? "bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white shadow-indigo-600/30"
+                  : "bg-slate-800 text-slate-500 border border-slate-700/40 cursor-default"
+              }`}
+              title="Salvar alterações (Ctrl+S)"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>Salvar</span>
+            </button>
+          )}
         </div>
       </div>
 
       {/* Barra de Ferramentas com Recursos Fandom (Ativa em modo de edição ou split) */}
-      {viewMode !== "preview" && (
+      {!isReadOnly && viewMode !== "preview" && (
         <div className="h-11 bg-slate-900/80 border-b border-slate-800/80 px-4 flex items-center gap-1.5 overflow-x-auto shrink-0 select-none custom-scrollbar">
-          {/* Botão Inserir Imagem Nativa */}
+          {/* Botão Puxar Imagem de Assets */}
           <button
-            onClick={handleInsertImage}
+            onClick={() => setIsAssetBrowserOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-cyan-300 bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-800/60 rounded-lg transition shrink-0"
+            title="Escolher imagem da pasta /assets da wiki"
+          >
+            <FolderOpen className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Puxar de /assets</span>
+          </button>
+
+          {/* Botão Inserir Imagem Nativa (Upload) */}
+          <button
+            onClick={async () => {
+              if (onInsertImage) {
+                const path = await onInsertImage();
+                if (path) handleSelectAsset(path);
+              }
+            }}
             className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-emerald-300 bg-emerald-950/60 hover:bg-emerald-900/60 border border-emerald-800/60 rounded-lg transition shrink-0"
             title="Escolher imagem do computador e salvar na pasta /assets"
           >
             <ImagePlus className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Imagem</span>
+            <span>Upload Imagem</span>
           </button>
 
           {/* Botão Inserir Infobox Fandom */}
@@ -375,6 +458,16 @@ assets/foto2.png | Arte Promocional
           >
             <LayoutTemplate className="w-3.5 h-3.5 text-cyan-400" />
             <span>Infobox</span>
+          </button>
+
+          {/* Botão Inserir Colunas/Seções Verticais (Máx 4) */}
+          <button
+            onClick={handleInsertSection}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-indigo-300 bg-indigo-950/60 hover:bg-indigo-900/60 border border-indigo-800/60 rounded-lg transition shrink-0"
+            title="Inserir Seções Verticais dividindo a tela (máximo 4 colunas)"
+          >
+            <Columns className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Colunas (Máx 4)</span>
           </button>
 
           {/* Botão Inserir Caixa de Aviso / Spoiler */}
@@ -463,7 +556,7 @@ assets/foto2.png | Arte Promocional
       {/* Corpo Central */}
       <div className="flex-1 flex overflow-hidden min-h-0">
         {/* Painel do Editor Textarea */}
-        {(viewMode === "edit" || viewMode === "split") && (
+        {!isReadOnly && (viewMode === "edit" || viewMode === "split") && (
           <div
             className={`h-full flex flex-col ${
               viewMode === "split"
@@ -475,7 +568,7 @@ assets/foto2.png | Arte Promocional
               ref={textareaRef}
               value={content}
               onChange={(e) => onContentChange(e.target.value)}
-              placeholder="Escreva seu artigo aqui... Use as ferramentas da barra superior para adicionar Infoboxes, Imagens, Avisos e WikiLinks!"
+              placeholder="Escreva seu artigo aqui... Use as ferramentas da barra superior para adicionar Infoboxes, Imagens, Seções e WikiLinks!"
               className="w-full h-full p-6 bg-slate-950 text-slate-200 font-mono text-xs leading-relaxed resize-none outline-none custom-scrollbar focus:ring-0 selection:bg-indigo-900/60 selection:text-white"
               spellCheck={false}
             />
@@ -483,11 +576,11 @@ assets/foto2.png | Arte Promocional
         )}
 
         {/* Painel de Visualização Estilo Fandom */}
-        {(viewMode === "preview" || viewMode === "split") && (
+        {(isReadOnly || viewMode === "preview" || viewMode === "split") && (
           <div
             onClick={handlePreviewClick}
             className={`h-full overflow-y-auto bg-slate-900/25 custom-scrollbar ${
-              viewMode === "split" ? "w-1/2" : "w-full"
+              !isReadOnly && viewMode === "split" ? "w-1/2" : "w-full"
             }`}
           >
             <div className="max-w-4xl mx-auto p-6 md:p-8">
@@ -512,7 +605,7 @@ assets/foto2.png | Arte Promocional
                     <Clock className="w-3.5 h-3.5 text-slate-500" />
                     <span>~{stats.minutes} min de leitura</span>
                   </div>
-                  {viewMode === "preview" && (
+                  {!isReadOnly && viewMode === "preview" && (
                     <button
                       onClick={() => setViewMode("edit")}
                       className="ml-auto text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition"
@@ -567,7 +660,7 @@ assets/foto2.png | Arte Promocional
                 </div>
               ) : (
                 <div className="text-slate-600 italic text-xs py-8 text-center">
-                  O artigo está vazio. Clique em Editar para começar a escrever!
+                  O artigo está vazio.
                 </div>
               )}
 
@@ -591,6 +684,14 @@ assets/foto2.png | Arte Promocional
           </div>
         )}
       </div>
+
+      {/* Modal Asset Browser para Seleção de Imagens da Pasta /assets */}
+      <AssetBrowserModal
+        isOpen={isAssetBrowserOpen}
+        onClose={() => setIsAssetBrowserOpen(false)}
+        onSelectImage={handleSelectAsset}
+        onUploadNew={onInsertImage}
+      />
 
       {/* Lightbox / Modal para Visualização Ampliada de Imagens */}
       {selectedLightboxImage && (
