@@ -32,17 +32,117 @@ function escapeAttribute(str: string): string {
 }
 
 function renderCustomBody(markdown: string, currentWikiPath: string | null): string {
-  const withResolvedImages = markdown.replace(/!\[(.*?)\]\((.*?)\)/g, (_match, alt, src) => {
-    const resolved = resolveAssetUrl(src, currentWikiPath);
-    return `<img src="${escapeAttribute(resolved)}" alt="${escapeAttribute(alt)}" class="fandom-article-img" />`;
+  return parseFandomMarkdown(markdown, currentWikiPath).html;
+}
+
+function getEditorParts(innerContent: string): { title: string; body: string }[] {
+  const markerRegex = /^[ \t]*:::(?:part|col(?:umn|una)?)(?:[ \t]+titulo="([^"]*)")?[^\r\n]*$/gm;
+  const markers = Array.from(innerContent.matchAll(markerRegex));
+  if (!markers.length) {
+    return innerContent
+      .split(/\r?\n\s*---\s*\r?\n/)
+      .map((body) => ({ title: "", body: body.trim() }))
+      .filter((part) => part.body);
+  }
+
+  return markers.map((marker, index) => {
+    const markerEnd = (marker.index ?? 0) + marker[0].length;
+    const bodyStart = markerEnd + (innerContent[markerEnd] === "\r" ? 2 : 1);
+    const bodyEnd = index + 1 < markers.length
+      ? markers[index + 1].index ?? innerContent.length
+      : innerContent.length;
+    return {
+      title: (marker[1] || "").replace(/&quot;/g, '"').trim(),
+      body: innerContent.slice(bodyStart, bodyEnd).trim(),
+    };
   });
-  return marked.parse(withResolvedImages) as string;
+}
+
+function renderEditorParts(innerContent: string, currentWikiPath: string | null): string {
+  const parts = getEditorParts(innerContent);
+  if (!parts.length) return "";
+
+  const count = parts.length;
+  const gridColumns = count === 2
+    ? "grid-cols-1 md:grid-cols-2"
+    : count === 3
+    ? "grid-cols-1 md:grid-cols-2 lg:grid-cols-3"
+    : "grid-cols-1 md:grid-cols-2 lg:grid-cols-4";
+  const renderedParts = parts.map((part, index) => `
+    <section class="min-w-0 px-4 first:pl-0 last:pr-0 ${index > 0 ? "border-t border-slate-800 pt-4 md:border-t-0 md:border-l md:pt-0 md:pl-4" : ""}">
+      ${part.title ? `<h2 class="text-sm font-semibold text-indigo-300 border-b border-slate-800 pb-2 mb-3">${marked.parseInline(part.title)}</h2>` : ""}
+      <div class="text-sm leading-relaxed">
+        ${renderCustomBody(part.body, currentWikiPath)}
+      </div>
+    </section>
+  `).join("");
+
+  return normalizeHtmlBlock(`
+    <div class="my-4 w-full not-prose" data-fandom="editorparts">
+      <div class="grid ${gridColumns} gap-0 items-start">
+        ${renderedParts}
+      </div>
+    </div>
+  `);
+}
+
+function flattenEditorParts(innerContent: string): string {
+  return getEditorParts(innerContent).map((part) => part.body).filter(Boolean).join("\n\n");
+}
+
+function flattenLegacyColumnBlocks(markdown: string): string {
+  const lines: { start: number; end: number; text: string }[] = [];
+  const lineRegex = /[^\r\n]*(?:\r\n|\n|\r|$)/g;
+  let lineMatch: RegExpExecArray | null;
+  while ((lineMatch = lineRegex.exec(markdown)) !== null && lineMatch[0]) {
+    lines.push({
+      start: lineMatch.index,
+      end: lineMatch.index + lineMatch[0].length,
+      text: lineMatch[0].replace(/(?:\r\n|\n|\r)$/, ""),
+    });
+  }
+
+  let output = "";
+  let cursor = 0;
+  for (let index = 0; index < lines.length; index++) {
+    if (!/^:::columns(?:\s.*)?$/.test(lines[index].text.trim())) continue;
+
+    let nestedBlocks = 0;
+    let closingIndex = -1;
+    for (let candidate = index + 1; candidate < lines.length; candidate++) {
+      const line = lines[candidate].text.trim();
+      if (/^:::(?:infobox|notice|quote|gallery|section)\b/i.test(line)) {
+        nestedBlocks++;
+      } else if (/^:::endcolumns\s*$/i.test(line)) {
+        closingIndex = candidate;
+        break;
+      } else if (/^:::\s*$/.test(line)) {
+        if (nestedBlocks > 0) nestedBlocks--;
+        else {
+          closingIndex = candidate;
+          break;
+        }
+      }
+    }
+
+    if (closingIndex === -1) continue;
+
+    const openingEnd = lines[index].end;
+    const closingStart = lines[closingIndex].start;
+    output += markdown.slice(cursor, lines[index].start);
+    output += `\n\n${flattenEditorParts(markdown.slice(openingEnd, closingStart))}\n\n`;
+    cursor = lines[closingIndex].end;
+    index = closingIndex;
+  }
+
+  return output + markdown.slice(cursor);
 }
 
 /**
  * Processa blocos customizados do Fandom:
  * - :::infobox ... :::
- * - :::columns ... ::: (seções verticais dividindo a tela em até 4 colunas)
+ * - :::editorparts ... :::endparts (partes editáveis em colunas no artigo)
+ * - :::columns ... ::: (formato antigo de partes editáveis)
  * - :::quote ... :::
  * - :::notice ... :::
  * - :::gallery ... :::
@@ -65,81 +165,20 @@ export function parseFandomMarkdown(
 
   let content = rawMarkdown;
 
-  // 1. Processar Blocos de Colunas/Seções Verticais :::columns ... ::: (máximo 4 colunas dividindo a tela)
-  content = content.replace(/(?:^|\r?\n):::columns[^\r\n]*(?:\r?\n)([\s\S]*?)(?:\r?\n\s*:::(?:endcolumns)?\s*(?:\r?\n|$)|$)/gi, (_match, innerContent) => {
-    // Regex para capturar colunas dentro do bloco :::columns:
-    // Suporta :::col titulo="...", :::col, :::coluna titulo="...", [coluna: ...]
-    const colRegex = /(?:^|\r?\n)\s*(?::::col(?:umn|una)?(?:\s+titulo="([^"]*)")?|\[col(?:una)?(?::\s*([^\]]*))?\])([\s\S]*?)(?=(?:\r?\n\s*(?::::col(?:umn|una)?|\[col(?:una)?)|$))/gi;
-    let cm;
-    const cols: { title?: string; body: string }[] = [];
-    while ((cm = colRegex.exec(innerContent)) !== null) {
-      const title = (cm[1] || cm[2] || "").trim();
-      const body = cm[3].trim().replace(/\r?\n\s*:::(?:endcol)?\s*$/g, "");
-      if (body || title) {
-        cols.push({ title, body });
-      }
-    }
+  // Renderizar as partes editáveis lado a lado no artigo.
+  content = content.replace(
+    /:::editorparts[^\r\n]*\r?\n([\s\S]*?)\r?\n\s*:::endparts(?:\s*\r?\n|$)/gi,
+    (_match, innerContent) => storeProtected(renderEditorParts(innerContent, currentWikiPath))
+  );
 
-    // Se o usuário não utilizou a tag :::col, tenta dividir por separadores horizontais ---
-    if (cols.length === 0) {
-      const parts = innerContent.split(/\r?\n\s*---\s*\r?\n/);
-      for (const part of parts) {
-        const cleaned = part.trim().replace(/\r?\n\s*:::\s*$/g, "");
-        if (cleaned) cols.push({ body: cleaned });
-      }
-    }
+  content = content.replace(
+    /:::columns[^\r\n]*\r?\n([\s\S]*?)\r?\n\s*:::endcolumns(?:\s*\r?\n|$)/gi,
+    (_match, innerContent) => storeProtected(renderEditorParts(innerContent, currentWikiPath))
+  );
 
-    // Se ainda estiver vazio mas há conteúdo, usa o conteúdo como coluna única
-    if (cols.length === 0 && innerContent.trim()) {
-      cols.push({ body: innerContent.trim().replace(/\r?\n\s*:::\s*$/g, "") });
-    }
+  content = flattenLegacyColumnBlocks(content);
 
-    // Limite máximo de 4 seções verticais
-    const finalCols = cols.slice(0, 4);
-    const count = Math.max(1, Math.min(4, finalCols.length));
-
-    // Determina classe grid dependendo da quantidade (1 a 4 colunas)
-    const gridColsClass = count === 1
-      ? "grid-cols-1"
-      : count === 2
-      ? "grid-cols-1 md:grid-cols-2"
-      : count === 3
-      ? "grid-cols-1 md:grid-cols-3"
-      : "grid-cols-1 md:grid-cols-2 lg:grid-cols-4";
-
-    const colsHtml = finalCols
-      .map((col, idx) => {
-        const parsedBody = renderCustomBody(col.body, currentWikiPath);
-        return `
-          <div class="fandom-vertical-col flex flex-col bg-slate-900/60 border border-slate-800 rounded-xl p-4 shadow-sm min-w-0">
-            ${
-              col.title
-                ? `<div class="font-bold text-xs text-indigo-300 border-b border-slate-800/80 pb-2 mb-3 flex items-center justify-between">
-                     <span>${marked.parseInline(col.title)}</span>
-                     <span class="text-[10px] text-slate-500 font-mono">Coluna ${idx + 1}</span>
-                   </div>`
-                : ""
-            }
-            <div class="text-xs text-slate-300 leading-relaxed flex-1 space-y-2">
-              ${parsedBody}
-            </div>
-          </div>
-        `;
-      })
-      .join("");
-
-    const blockHtml = normalizeHtmlBlock(`
-      <div class="fandom-columns-container my-6 not-prose" data-fandom="columns">
-        <div class="grid ${gridColsClass} gap-4 items-stretch">
-          ${colsHtml}
-        </div>
-      </div>
-    `);
-
-    return storeProtected(blockHtml);
-  });
-
-  // 2. Processar Seções Isoladas antigas :::section ... ::: retrocompatibilidade
+  // Processar Seções Isoladas antigas :::section ... ::: retrocompatibilidade
   content = content.replace(/:::section(?:\s+titulo="([^"]+)")?([\s\S]*?):::/g, (_match, rawTitle, sectionBody) => {
     const title = rawTitle ? rawTitle.trim() : "Seção";
     const parsedSubContent = renderCustomBody(sectionBody.trim(), currentWikiPath);

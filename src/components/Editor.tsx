@@ -52,6 +52,54 @@ interface EditorProps {
 
 type ViewMode = "preview" | "edit" | "split";
 
+interface EditableColumn {
+  content: string;
+}
+
+interface ColumnEditorState {
+  before: string;
+  after: string;
+  columns: EditableColumn[];
+}
+
+function serializeColumnEditor(state: ColumnEditorState): string {
+  const columns = state.columns
+    .map((column) => `:::part\n${column.content}`)
+    .join("\n\n");
+  const block = `:::editorparts\n${columns}\n:::endparts`;
+  const separator = state.before && !state.before.endsWith("\n") ? "\n" : "";
+  const trailingSeparator = state.after && !state.after.startsWith("\n") ? "\n" : "";
+  return `${state.before}${separator}${block}${trailingSeparator}${state.after}`;
+}
+
+function parseColumnEditor(content: string): ColumnEditorState | null {
+  const blockRegex = /:::(?:editorparts|columns)[^\r\n]*\r?\n([\s\S]*?)\r?\n\s*:::(?:endparts|endcolumns)(?:\s*\r?\n|$)/i;
+  const match = blockRegex.exec(content);
+  if (!match || match.index === undefined) return null;
+
+  const innerContent = match[1];
+  const markers = Array.from(
+    innerContent.matchAll(/^[ \t]*:::(?:part|col)(?:[ \t]+titulo="([^"]*)")?[^\r\n]*$/gm)
+  );
+  if (!markers.length) return null;
+
+  const columns = markers.map((marker, index) => {
+    const bodyStart = (marker.index ?? 0) + marker[0].length + (innerContent[marker.index! + marker[0].length] === "\r" ? 2 : 1);
+    const bodyEnd = index + 1 < markers.length
+      ? markers[index + 1].index ?? innerContent.length
+      : innerContent.length;
+    return {
+      content: innerContent.slice(bodyStart, bodyEnd).replace(/\r?\n+$/, ""),
+    };
+  });
+
+  return {
+    before: content.slice(0, match.index),
+    after: content.slice(match.index + match[0].length),
+    columns,
+  };
+}
+
 export const Editor: React.FC<EditorProps> = ({
   currentWikiPath,
   activeFilePath,
@@ -73,6 +121,9 @@ export const Editor: React.FC<EditorProps> = ({
   const [selectedLightboxImage, setSelectedLightboxImage] = useState<string | null>(null);
   const [isAssetBrowserOpen, setIsAssetBrowserOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const columnTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([]);
+  const [columnEditor, setColumnEditor] = useState<ColumnEditorState | null>(null);
+  const [activeColumnIndex, setActiveColumnIndex] = useState(0);
 
   const [assetVersion, setAssetVersion] = useState(0);
 
@@ -80,6 +131,11 @@ export const Editor: React.FC<EditorProps> = ({
   useEffect(() => {
     preloadAssets().then(() => setAssetVersion(v => v + 1));
   }, [currentWikiPath, activeFilePath]);
+
+  useEffect(() => {
+    setColumnEditor(activeFilePath ? parseColumnEditor(content) : null);
+    setActiveColumnIndex(0);
+  }, [activeFilePath, content]);
 
   // Parser customizado do Fandom com suporte a Infoboxes, Quotes, Notices, Galerias, Colunas (Seções Verticais) e WikiLinks
   const { html: renderedHtml, toc } = useMemo(() => {
@@ -119,21 +175,37 @@ export const Editor: React.FC<EditorProps> = ({
   // Funções de auxílio para inserção de Markdown na posição do cursor
   const insertTextAtCursor = (prefix: string, suffix = "", defaultText = "") => {
     if (isReadOnly) return;
-    const textarea = textareaRef.current;
+    const textarea = columnEditor
+      ? columnTextareaRefs.current[activeColumnIndex]
+      : textareaRef.current;
     if (!textarea) return;
 
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
-    const selected = content.substring(start, end) || defaultText;
+    const source = columnEditor
+      ? columnEditor.columns[activeColumnIndex]?.content ?? ""
+      : content;
+    const selected = source.substring(start, end) || defaultText;
 
-    const newContent =
-      content.substring(0, start) +
+    const updatedText =
+      source.substring(0, start) +
       prefix +
       selected +
       suffix +
-      content.substring(end);
+      source.substring(end);
 
-    onContentChange(newContent);
+    if (columnEditor) {
+      const nextState = {
+        ...columnEditor,
+        columns: columnEditor.columns.map((column, index) =>
+          index === activeColumnIndex ? { ...column, content: updatedText } : column
+        ),
+      };
+      setColumnEditor(nextState);
+      onContentChange(serializeColumnEditor(nextState));
+    } else {
+      onContentChange(updatedText);
+    }
 
     setTimeout(() => {
       textarea.focus();
@@ -198,17 +270,50 @@ assets/foto2.png | Arte Promocional
     insertTextAtCursor(template);
   };
 
-  // Inserir Bloco de Seções Verticais (Máx 4 colunas dividindo a página na horizontal)
-  const handleInsertSection = () => {
-    const template = `\n:::columns
-:::col titulo="Coluna 1"
-Conteúdo da primeira coluna vertical. Você pode colocar texto, imagens ou tópicos aqui.
+  // Inserir um bloco de partes verticais e editar cada parte separadamente
+  const handleInsertColumns = (count: 2 | 3) => {
+    const columns = Array.from({ length: count }, (_value, index) => ({
+      content: index === 0 ? content : "",
+    }));
+    const nextState = {
+      before: "",
+      after: "",
+      columns,
+    };
 
-:::col titulo="Coluna 2"
-Conteúdo da segunda coluna vertical dividindo a tela.
-:::
-\n`;
-    insertTextAtCursor(template);
+    setColumnEditor(nextState);
+    setActiveColumnIndex(0);
+    onContentChange(serializeColumnEditor(nextState));
+  };
+
+  const handleEditColumns = () => {
+    const parsed = parseColumnEditor(content);
+    if (!parsed) return;
+    setColumnEditor(parsed);
+    setActiveColumnIndex(0);
+  };
+
+  const handleExitColumnEditor = () => {
+    if (!columnEditor) return;
+    const parts = columnEditor.columns.map((column) => column.content.trim()).filter(Boolean);
+    const flattenedContent = [columnEditor.before.trim(), ...parts, columnEditor.after.trim()]
+      .filter(Boolean)
+      .join("\n\n");
+    setColumnEditor(null);
+    setViewMode("edit");
+    onContentChange(flattenedContent);
+  };
+
+  const handleColumnContentChange = (index: number, value: string) => {
+    if (!columnEditor) return;
+    const nextState = {
+      ...columnEditor,
+      columns: columnEditor.columns.map((column, columnIndex) =>
+        columnIndex === index ? { ...column, content: value } : column
+      ),
+    };
+    setColumnEditor(nextState);
+    onContentChange(serializeColumnEditor(nextState));
   };
 
   if (!activeFilePath) {
@@ -460,15 +565,45 @@ Conteúdo da segunda coluna vertical dividindo a tela.
             <span>Infobox</span>
           </button>
 
-          {/* Botão Inserir Colunas/Seções Verticais (Máx 4) */}
-          <button
-            onClick={handleInsertSection}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-indigo-300 bg-indigo-950/60 hover:bg-indigo-900/60 border border-indigo-800/60 rounded-lg transition shrink-0"
-            title="Inserir Seções Verticais dividindo a tela (máximo 4 colunas)"
-          >
-            <Columns className="w-3.5 h-3.5 text-indigo-400" />
-            <span>Colunas (Máx 4)</span>
-          </button>
+          {columnEditor ? (
+            <button
+              onClick={handleExitColumnEditor}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-indigo-300 bg-indigo-950/60 hover:bg-indigo-900/60 border border-indigo-800/60 rounded-lg transition shrink-0"
+              title="Sair da divisão e voltar ao editor normal"
+            >
+              <Code className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Edição normal</span>
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={() => handleInsertColumns(2)}
+                className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-indigo-300 bg-indigo-950/60 hover:bg-indigo-900/60 border border-indigo-800/60 rounded-lg transition shrink-0"
+                title="Dividir o artigo em duas partes editáveis"
+              >
+                <Columns className="w-3.5 h-3.5 text-indigo-400" />
+                <span>2 partes</span>
+              </button>
+              <button
+                onClick={() => handleInsertColumns(3)}
+                className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-indigo-300 bg-indigo-950/60 hover:bg-indigo-900/60 border border-indigo-800/60 rounded-lg transition shrink-0"
+                title="Dividir o artigo em três partes editáveis"
+              >
+                <Columns className="w-3.5 h-3.5 text-indigo-400" />
+                <span>3 partes</span>
+              </button>
+              {parseColumnEditor(content) && (
+                <button
+                  onClick={handleEditColumns}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-indigo-300 bg-indigo-950/60 hover:bg-indigo-900/60 border border-indigo-800/60 rounded-lg transition shrink-0"
+                  title="Editar separadamente as partes deste artigo"
+                >
+                  <Columns className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Editar partes</span>
+                </button>
+              )}
+            </>
+          )}
 
           {/* Botão Inserir Caixa de Aviso / Spoiler */}
           <button
@@ -564,14 +699,43 @@ Conteúdo da segunda coluna vertical dividindo a tela.
                 : "w-full"
             }`}
           >
-            <textarea
-              ref={textareaRef}
-              value={content}
-              onChange={(e) => onContentChange(e.target.value)}
-              placeholder="Escreva seu artigo aqui... Use as ferramentas da barra superior para adicionar Infoboxes, Imagens, Seções e WikiLinks!"
-              className="w-full h-full p-6 bg-slate-950 text-slate-200 font-mono text-xs leading-relaxed resize-none outline-none custom-scrollbar focus:ring-0 selection:bg-indigo-900/60 selection:text-white"
-              spellCheck={false}
-            />
+            {columnEditor ? (
+              <div
+                className="w-full h-full grid bg-slate-950 overflow-auto"
+                style={{ gridTemplateColumns: `repeat(${columnEditor.columns.length}, minmax(0, 1fr))` }}
+              >
+                {columnEditor.columns.map((column, index) => (
+                  <section
+                    key={index}
+                    className={`min-w-0 min-h-0 flex flex-col border-r last:border-r-0 ${
+                      activeColumnIndex === index
+                        ? "border-indigo-500/70 bg-slate-900/40"
+                        : "border-slate-800 bg-slate-950"
+                    }`}
+                  >
+                    <textarea
+                      ref={(element) => { columnTextareaRefs.current[index] = element; }}
+                      value={column.content}
+                      onFocus={() => setActiveColumnIndex(index)}
+                      onChange={(event) => handleColumnContentChange(index, event.target.value)}
+                      placeholder={`Conteúdo da parte ${index + 1}. Insira imagens, infoboxes e outros blocos.`}
+                      className="w-full flex-1 min-h-0 p-3 bg-transparent text-slate-200 font-mono text-xs leading-relaxed resize-none outline-none custom-scrollbar"
+                      spellCheck={false}
+                      aria-label={`Conteúdo da parte ${index + 1}`}
+                    />
+                  </section>
+                ))}
+              </div>
+            ) : (
+              <textarea
+                ref={textareaRef}
+                value={content}
+                onChange={(e) => onContentChange(e.target.value)}
+                placeholder="Escreva seu artigo aqui... Use as ferramentas da barra superior para adicionar Infoboxes, Imagens, Seções e WikiLinks!"
+                className="w-full h-full p-6 bg-slate-950 text-slate-200 font-mono text-xs leading-relaxed resize-none outline-none custom-scrollbar focus:ring-0 selection:bg-indigo-900/60 selection:text-white"
+                spellCheck={false}
+              />
+            )}
           </div>
         )}
 
@@ -583,7 +747,7 @@ Conteúdo da segunda coluna vertical dividindo a tela.
               !isReadOnly && viewMode === "split" ? "w-1/2" : "w-full"
             }`}
           >
-            <div className="max-w-4xl mx-auto p-6 md:p-8">
+            <div className={`${parseColumnEditor(content) ? "max-w-none" : "max-w-4xl"} mx-auto p-6 md:p-8`}>
               {/* Cabeçalho do Artigo Fandom */}
               <div className="border-b-2 border-slate-800 pb-4 mb-6">
                 <div className="flex items-center gap-2 mb-2">
