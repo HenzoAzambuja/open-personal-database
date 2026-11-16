@@ -22,6 +22,7 @@ interface SidebarProps {
   fileTree: FileNode[];
   activeFilePath: string | null;
   searchQuery: string;
+  contentMatches: Record<string, string>;
   onSelectPage: (path: string) => void;
   onCreatePage: (parentPath?: string) => void;
   onCreateFolder: (parentPath?: string) => void;
@@ -37,10 +38,18 @@ interface TreeNodeProps {
   level: number;
   activeFilePath: string | null;
   searchQuery: string;
+  contentMatches: Record<string, string>;
   onSelectPage: (path: string) => void;
   onCreatePage: (parentPath?: string) => void;
   onCreateFolder: (parentPath?: string) => void;
   onDeleteItem: (path: string, name: string) => void;
+}
+
+function matchesSearch(item: FileNode, query: string, contentMatches: Record<string, string>): boolean {
+  if (!query) return true;
+  if (item.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())) return true;
+  if (contentMatches[item.path]) return true;
+  return item.children?.some(child => matchesSearch(child, query, contentMatches)) ?? false;
 }
 
 const TreeNode: React.FC<TreeNodeProps> = ({
@@ -48,6 +57,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
   level,
   activeFilePath,
   searchQuery,
+  contentMatches,
   onSelectPage,
   onCreatePage,
   onCreateFolder,
@@ -55,17 +65,11 @@ const TreeNode: React.FC<TreeNodeProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(true);
 
-  // Filtro de busca recursivo
-  const matchesSearch = (item: FileNode, q: string): boolean => {
-    if (!q) return true;
-    if (item.name.toLowerCase().includes(q.toLowerCase())) return true;
-    if (item.children) {
-      return item.children.some((child) => matchesSearch(child, q));
-    }
-    return false;
-  };
+  React.useEffect(() => {
+    if (searchQuery) setIsOpen(true);
+  }, [searchQuery]);
 
-  if (searchQuery && !matchesSearch(node, searchQuery)) {
+  if (searchQuery && !matchesSearch(node, searchQuery, contentMatches)) {
     return null;
   }
 
@@ -142,6 +146,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({
                   level={level + 1}
                   activeFilePath={activeFilePath}
                   searchQuery={searchQuery}
+                  contentMatches={contentMatches}
                   onSelectPage={onSelectPage}
                   onCreatePage={onCreatePage}
                   onCreateFolder={onCreateFolder}
@@ -174,7 +179,14 @@ const TreeNode: React.FC<TreeNodeProps> = ({
             isSelected ? "text-indigo-400" : "text-slate-400"
           }`}
         />
-        <span className="truncate">{displayName}</span>
+        <div className="min-w-0">
+          <span className="block truncate">{displayName}</span>
+          {searchQuery && contentMatches[node.path] && (
+            <span className="block truncate text-[10px] font-normal text-slate-500">
+              {contentMatches[node.path]}
+            </span>
+          )}
+        </div>
       </div>
 
       <div
@@ -199,6 +211,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   fileTree,
   activeFilePath,
   searchQuery,
+  contentMatches,
   onSelectPage,
   onCreatePage,
   onCreateFolder,
@@ -337,6 +350,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
               Criar primeira página
             </button>
           </div>
+        ) : searchQuery && !fileTree.some(node => matchesSearch(node, searchQuery, contentMatches)) ? (
+          <div className="p-4 text-center text-xs text-slate-500">
+            Nenhuma página ou conteúdo encontrado.
+          </div>
         ) : (
           fileTree.map((node) => (
             <TreeNode
@@ -345,6 +362,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               level={0}
               activeFilePath={activeFilePath}
               searchQuery={searchQuery}
+              contentMatches={contentMatches}
               onSelectPage={onSelectPage}
               onCreatePage={onCreatePage}
               onCreateFolder={onCreateFolder}
@@ -356,4 +374,3 @@ export const Sidebar: React.FC<SidebarProps> = ({
     </aside>
   );
 };
-

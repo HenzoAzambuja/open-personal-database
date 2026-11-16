@@ -1,15 +1,18 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useWiki } from "./hooks/useWiki";
-import { Header } from "./components/Header";
+import { Header, type SearchResult } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
 import { Editor } from "./components/Editor";
 import { CreateWikiModal } from "./components/CreateWikiModal";
 import { AlertCircle, CheckCircle2, Info, Loader2 } from "lucide-react";
+import { FileNode } from "./types/wiki";
 
 export function App() {
   const {
     state,
     notification,
+    contentMatches,
+    isSearching,
     openWikiFolder,
     createNewWiki,
     selectPage,
@@ -24,10 +27,48 @@ export function App() {
     navigateToPageByName,
     setSearchQuery,
     insertImage,
+    enableEditing,
   } = useWiki();
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isCreateWikiModalOpen, setIsCreateWikiModalOpen] = useState(false);
+  const searchResults = useMemo(() => {
+    const query = state.searchQuery.trim().toLocaleLowerCase();
+    if (!query) return [];
+
+    const results: SearchResult[] = [];
+    const collectResults = (nodes: FileNode[]) => {
+      nodes.forEach((node) => {
+        if (node.is_dir) {
+          collectResults(node.children || []);
+          return;
+        }
+
+        if (!/\.md$/i.test(node.name)) return;
+        const title = node.name.replace(/\.md$/i, "");
+        const titleMatches = title.toLocaleLowerCase().includes(query);
+        const snippet = contentMatches[node.path];
+        if (!titleMatches && !snippet) return;
+
+        const separatorIndex = Math.max(node.path.lastIndexOf("/"), node.path.lastIndexOf("\\"));
+        results.push({
+          path: node.path,
+          title,
+          folder: separatorIndex >= 0 ? node.path.slice(0, separatorIndex) : "",
+          snippet,
+          matchType: titleMatches ? "title" : "content",
+        });
+      });
+    };
+
+    collectResults(state.fileTree);
+    return results
+      .sort((a, b) => {
+        const aRank = a.matchType === "title" ? (a.title.toLocaleLowerCase().startsWith(query) ? 0 : 1) : 2;
+        const bRank = b.matchType === "title" ? (b.title.toLocaleLowerCase().startsWith(query) ? 0 : 1) : 2;
+        return aRank - bRank || a.title.localeCompare(b.title);
+      })
+  }, [contentMatches, state.fileTree, state.searchQuery]);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden">
@@ -37,7 +78,10 @@ export function App() {
         wikiName={state.wikiName}
         pageCount={state.metadata?.pageCount || 0}
         searchQuery={state.searchQuery}
+        searchResults={searchResults}
+        isSearching={isSearching}
         onSearchChange={setSearchQuery}
+        onSelectPage={selectPage}
         onOpenWiki={openWikiFolder}
         onOpenCreateWiki={() => setIsCreateWikiModalOpen(true)}
         onExportOpd={exportOpd}
@@ -55,6 +99,7 @@ export function App() {
           fileTree={state.fileTree}
           activeFilePath={state.activeFilePath}
           searchQuery={state.searchQuery}
+          contentMatches={contentMatches}
           onSelectPage={selectPage}
           onCreatePage={(parent) => createNewPage(parent)}
           onCreateFolder={(parent) => createNewFolder(parent)}
@@ -72,6 +117,8 @@ export function App() {
           activeFileTitle={state.activeFileTitle}
           content={state.activeFileContent}
           isDirty={state.isDirty}
+          isReadOnly={state.isReadOnly}
+          onEnableEditing={enableEditing}
           onContentChange={updateContent}
           onSave={() => saveCurrentPage()}
           onNavigateWikiLink={navigateToPageByName}

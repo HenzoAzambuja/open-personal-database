@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import React, { useEffect, useState } from "react";
+import { chooseParentDirectory, isFileSystemAccessSupported } from "../utils/browserStorage";
 import { Folder, X, Sparkles, Check, AlertCircle } from "lucide-react";
 
 interface CreateWikiModalProps {
@@ -17,23 +17,25 @@ export const CreateWikiModal: React.FC<CreateWikiModalProps> = ({
   const [parentPath, setParentPath] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const supportsFolderPicker = isFileSystemAccessSupported();
+
+  useEffect(() => {
+    if (isOpen && !supportsFolderPicker) {
+      setParentPath("Armazenamento local do navegador");
+    }
+  }, [isOpen, supportsFolderPicker]);
 
   if (!isOpen) return null;
 
   const handleSelectFolder = async () => {
     try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: "Selecione o local onde a pasta da nova Wiki será criada",
-      });
-
-      if (selected && typeof selected === "string") {
-        setParentPath(selected);
+      const selected = await chooseParentDirectory();
+      if (selected) {
+        setParentPath(selected.name);
         setErrorMessage(null);
       }
     } catch (err: unknown) {
-      console.error("Erro ao selecionar diretório:", err);
+      setErrorMessage(err instanceof Error ? err.message : "Não foi possível selecionar a pasta.");
     }
   };
 
@@ -47,7 +49,7 @@ export const CreateWikiModal: React.FC<CreateWikiModalProps> = ({
     }
 
     if (!parentPath) {
-      setErrorMessage("Por favor, selecione uma pasta de destino no seu computador.");
+      setErrorMessage("Por favor, selecione uma pasta de destino.");
       return;
     }
 
@@ -118,10 +120,10 @@ export const CreateWikiModal: React.FC<CreateWikiModalProps> = ({
             />
           </div>
 
-          {/* Campo: Local no Disco */}
+          {/* Local de armazenamento */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-              Pasta de Destino
+              {supportsFolderPicker ? "Pasta de Destino" : "Armazenamento"}
             </label>
             <div className="flex items-center gap-2">
               <div
@@ -136,22 +138,26 @@ export const CreateWikiModal: React.FC<CreateWikiModalProps> = ({
                   </span>
                 )}
               </div>
-              <button
-                type="button"
-                onClick={handleSelectFolder}
-                className="flex items-center gap-1.5 px-3 py-2.5 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-xs font-medium text-slate-200 border border-slate-700 rounded-xl transition shrink-0"
-              >
-                <Folder className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Escolher</span>
-              </button>
+              {supportsFolderPicker && (
+                <button
+                  type="button"
+                  onClick={handleSelectFolder}
+                  className="flex items-center gap-1.5 px-3 py-2.5 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-xs font-medium text-slate-200 border border-slate-700 rounded-xl transition shrink-0"
+                >
+                  <Folder className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Escolher</span>
+                </button>
+              )}
             </div>
             <p className="text-[11px] text-slate-500 mt-1">
-              Uma pasta com o nome da wiki será criada dentro deste diretório.
+              {supportsFolderPicker
+                ? "O navegador solicitará permissão para criar a pasta da wiki no diretório selecionado."
+                : "A wiki será salva neste navegador usando IndexedDB. Ela continuará disponível neste dispositivo e neste perfil do navegador."}
             </p>
           </div>
 
           {/* Pré-visualização do Caminho e Arquivos */}
-          {previewPath && (
+          {supportsFolderPicker && previewPath && (
             <div className="p-3 bg-slate-950/60 border border-slate-800/80 rounded-xl space-y-1.5 text-xs">
               <div className="text-[11px] font-semibold text-slate-400">
                 Estrutura criada:

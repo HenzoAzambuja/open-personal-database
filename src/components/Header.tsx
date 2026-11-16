@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   FolderOpen,
   Archive,
@@ -9,14 +9,27 @@ import {
   X,
   RefreshCw,
   Sparkles,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
+
+export interface SearchResult {
+  path: string;
+  title: string;
+  folder: string;
+  snippet?: string;
+  matchType: "title" | "content";
+}
 
 interface HeaderProps {
   currentWikiPath: string | null;
   wikiName: string | null;
   pageCount: number;
   searchQuery: string;
+  searchResults: SearchResult[];
+  isSearching: boolean;
   onSearchChange: (query: string) => void;
+  onSelectPage: (path: string) => void | Promise<void>;
   onOpenWiki: () => void;
   onOpenCreateWiki: () => void;
   onExportOpd: () => void;
@@ -30,7 +43,10 @@ export const Header: React.FC<HeaderProps> = ({
   wikiName,
   pageCount,
   searchQuery,
+  searchResults,
+  isSearching,
   onSearchChange,
+  onSelectPage,
   onOpenWiki,
   onOpenCreateWiki,
   onExportOpd,
@@ -38,6 +54,31 @@ export const Header: React.FC<HeaderProps> = ({
   onRefresh,
   isDirty,
 }) => {
+  const resultsPerPage = 5;
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [activeResultIndex, setActiveResultIndex] = useState(-1);
+  const [currentResultPage, setCurrentResultPage] = useState(0);
+  const searchPageCount = Math.ceil(searchResults.length / resultsPerPage);
+  const pageStartIndex = currentResultPage * resultsPerPage;
+  const visibleResults = searchResults.slice(pageStartIndex, pageStartIndex + resultsPerPage);
+  const isDropdownOpen = Boolean(currentWikiPath && isSearchFocused && searchQuery.trim());
+
+  useEffect(() => {
+    setActiveResultIndex(-1);
+    setCurrentResultPage(0);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    setCurrentResultPage((page) => Math.min(page, Math.max(0, searchPageCount - 1)));
+  }, [searchPageCount]);
+
+  const selectResult = (result: SearchResult) => {
+    void onSelectPage(result.path);
+    onSearchChange("");
+    setIsSearchFocused(false);
+    setActiveResultIndex(-1);
+  };
+
   return (
     <header className="h-16 bg-slate-900 border-b border-slate-800 text-slate-100 flex items-center justify-between px-4 select-none shrink-0 gap-4 shadow-sm">
       {/* Lado Esquerdo: Marca do Aplicativo e Informações da Wiki */}
@@ -84,25 +125,153 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="relative">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
+            id="wiki-search"
             type="text"
             placeholder={
               currentWikiPath
-                ? "Filtrar páginas ou notas..."
+                ? "Buscar por nome ou conteúdo..."
                 : "Abra uma wiki para buscar..."
             }
+            title="Busca nomes e conteúdo das páginas Markdown"
             value={searchQuery}
             disabled={!currentWikiPath}
             onChange={(e) => onSearchChange(e.target.value)}
+            onFocus={() => setIsSearchFocused(true)}
+            onBlur={() => setIsSearchFocused(false)}
+            onKeyDown={(event) => {
+              if (!isDropdownOpen) return;
+              if (event.key === "ArrowDown" && searchResults.length > 0) {
+                event.preventDefault();
+                const nextIndex = (activeResultIndex + 1) % searchResults.length;
+                setCurrentResultPage(Math.floor(nextIndex / resultsPerPage));
+                setActiveResultIndex(nextIndex);
+              } else if (event.key === "ArrowUp" && searchResults.length > 0) {
+                event.preventDefault();
+                const nextIndex = activeResultIndex <= 0 ? searchResults.length - 1 : activeResultIndex - 1;
+                setCurrentResultPage(Math.floor(nextIndex / resultsPerPage));
+                setActiveResultIndex(nextIndex);
+              } else if (event.key === "Enter" && searchResults.length > 0) {
+                event.preventDefault();
+                selectResult(searchResults[Math.max(activeResultIndex, 0)]);
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                setIsSearchFocused(false);
+              }
+            }}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={isDropdownOpen}
+            aria-controls={searchResults.length > 0 ? "wiki-search-results" : undefined}
+            aria-activedescendant={activeResultIndex >= 0 ? `wiki-search-result-${activeResultIndex}` : undefined}
             className="w-full bg-slate-800/80 hover:bg-slate-800 focus:bg-slate-800 border border-slate-700/80 focus:border-indigo-500 text-xs text-slate-200 rounded-lg pl-9 pr-8 py-2 outline-none transition placeholder-slate-500 disabled:opacity-40 disabled:cursor-not-allowed"
           />
           {searchQuery && (
             <button
               onClick={() => onSearchChange("")}
+              onMouseDown={(event) => event.preventDefault()}
               className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 p-0.5 rounded"
               title="Limpar busca"
             >
               <X className="w-3.5 h-3.5" />
             </button>
+          )}
+          {isDropdownOpen && (
+            <div className="absolute left-0 right-0 top-full z-[60] mt-2 overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl shadow-black/40">
+              {searchResults.length > 0 ? (
+                <ul id="wiki-search-results" role="listbox" aria-label="Resultados da busca" className="max-h-64 overflow-y-auto p-1.5 custom-scrollbar">
+                  {visibleResults.map((result, index) => {
+                    const resultIndex = pageStartIndex + index;
+                    return (
+                    <li
+                      id={`wiki-search-result-${resultIndex}`}
+                      key={result.path}
+                      role="option"
+                      aria-selected={activeResultIndex === resultIndex}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onMouseEnter={() => setActiveResultIndex(resultIndex)}
+                      onClick={() => selectResult(result)}
+                      className={`cursor-pointer rounded-lg px-3 py-2.5 transition ${
+                        activeResultIndex === resultIndex ? "bg-indigo-600/20" : "hover:bg-slate-800"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="flex min-w-0 items-center gap-2 text-xs font-medium text-slate-100">
+                          <FileText className="h-3.5 w-3.5 shrink-0 text-indigo-400" />
+                          <span className="truncate">{result.title}</span>
+                        </span>
+                        <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+                          {result.matchType === "title" ? "Título" : "Conteúdo"}
+                        </span>
+                      </div>
+                      {result.folder && (
+                        <span className="mt-1 block truncate pl-[22px] text-[10px] text-slate-500">
+                          {result.folder}
+                        </span>
+                      )}
+                      {result.snippet && (
+                        <span className="mt-1 block truncate pl-[22px] text-[10px] text-slate-400">
+                          {result.snippet}
+                        </span>
+                      )}
+                    </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <p className="px-3 py-4 text-center text-xs text-slate-400">
+                  {isSearching ? "Buscando nas páginas..." : "Nenhuma página encontrada."}
+                </p>
+              )}
+              {isSearching && searchResults.length > 0 ? (
+                <p className="border-t border-slate-800 px-3 py-2 text-[10px] text-slate-500">
+                  {searchResults.length} {searchResults.length === 1 ? "resultado encontrado" : "resultados encontrados"}; buscando também no conteúdo...
+                </p>
+              ) : searchResults.length > 0 ? (
+                <div className="flex items-center justify-between border-t border-slate-800 px-2 py-1.5">
+                  <span className="text-[10px] text-slate-400">
+                    {pageStartIndex + 1}–{Math.min(pageStartIndex + visibleResults.length, searchResults.length)} de {searchResults.length}
+                  </span>
+                  {searchPageCount > 1 && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        aria-label="Resultados anteriores"
+                        title="Resultados anteriores"
+                        disabled={currentResultPage === 0}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => {
+                          setCurrentResultPage((page) => page - 1);
+                          setActiveResultIndex(-1);
+                        }}
+                        className="rounded p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-30"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </button>
+                      <span className="min-w-8 text-center text-[10px] text-slate-400">
+                        {currentResultPage + 1}/{searchPageCount}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label="Próximos resultados"
+                        title="Próximos resultados"
+                        disabled={currentResultPage >= searchPageCount - 1}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => {
+                          setCurrentResultPage((page) => page + 1);
+                          setActiveResultIndex(-1);
+                        }}
+                        className="rounded p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-30"
+                      >
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+                  <span className="hidden text-[10px] text-slate-500 sm:inline">
+                    ↑ ↓ navega · Enter abre
+                  </span>
+                </div>
+              ) : null}
+            </div>
           )}
         </div>
       </div>
@@ -163,4 +332,3 @@ export const Header: React.FC<HeaderProps> = ({
     </header>
   );
 };
-
