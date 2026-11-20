@@ -2,6 +2,8 @@ import React, { useState, useMemo, useRef, useEffect } from "react";
 import { parseFandomMarkdown } from "../utils/fandomParser";
 import { preloadAssets } from "../utils/browserStorage";
 import { AssetBrowserModal } from "./AssetBrowserModal";
+import { WikiThemeConfig } from "../types/wiki";
+import { getThemeStyleVariables } from "../utils/themeHelper";
 import {
   Save,
   BookOpen,
@@ -21,6 +23,7 @@ import {
   ImagePlus,
   LayoutTemplate,
   AlertTriangle,
+  EyeOff,
   Images,
   ListOrdered,
   Tag,
@@ -48,6 +51,7 @@ interface EditorProps {
   onCreatePage: () => void;
   onOpenCreateWiki?: () => void;
   onInsertImage?: () => Promise<string | null>;
+  themeConfig?: WikiThemeConfig | null;
 }
 
 type ViewMode = "preview" | "edit" | "split";
@@ -114,6 +118,7 @@ export const Editor: React.FC<EditorProps> = ({
   onCreatePage,
   onOpenCreateWiki,
   onInsertImage,
+  themeConfig,
 }) => {
   // Se for somente leitura, o modo padrão é preview
   const [viewMode, setViewMode] = useState<ViewMode>(isReadOnly ? "preview" : "split");
@@ -126,6 +131,12 @@ export const Editor: React.FC<EditorProps> = ({
   const [activeColumnIndex, setActiveColumnIndex] = useState(0);
 
   const [assetVersion, setAssetVersion] = useState(0);
+
+  // Gera variáveis CSS dinâmicas para colorir infoboxes, spoilers, links e acentos
+  const themeStyles = useMemo(
+    () => getThemeStyleVariables(themeConfig?.themeColor),
+    [themeConfig?.themeColor]
+  );
 
   // Garante que todas as imagens de /assets estejam carregadas e sincronizadas com blob URLs
   useEffect(() => {
@@ -169,6 +180,14 @@ export const Editor: React.FC<EditorProps> = ({
     const imgTarget = (e.target as HTMLElement).closest("img");
     if (imgTarget && imgTarget.src) {
       setSelectedLightboxImage(imgTarget.src);
+      return;
+    }
+
+    // 3. Clique em Spoiler Inline para revelar/ocultar
+    const spoilerTarget = (e.target as HTMLElement).closest(".fandom-inline-spoiler");
+    if (spoilerTarget) {
+      spoilerTarget.classList.toggle("revealed");
+      return;
     }
   };
 
@@ -245,10 +264,18 @@ Estatística: Valor
     insertTextAtCursor(template);
   };
 
-  // Inserir Template de Caixa de Aviso / Spoiler
-  const handleInsertNotice = () => {
-    const template = `\n:::notice tipo="spoiler" titulo="Alerta de Spoiler"
+  // Inserir Template de Caixa de Spoiler Temática da Wiki
+  const handleInsertSpoiler = () => {
+    const template = `\n:::spoiler titulo="Alerta de Spoiler"
 Este artigo contém revelações e detalhes cruciais sobre a história.
+:::\n`;
+    insertTextAtCursor(template);
+  };
+
+  // Inserir Template de Caixa de Aviso Geral
+  const handleInsertNotice = () => {
+    const template = `\n:::notice tipo="theme" titulo="Nota Importante"
+Escreva aqui uma observação ou informação em destaque.
 :::\n`;
     insertTextAtCursor(template);
   };
@@ -366,36 +393,57 @@ assets/foto2.png | Arte Promocional
     }
 
     return (
-      <main className="flex-1 bg-slate-950 flex flex-col items-center justify-center p-8 text-center select-none">
-        <div className="w-16 h-16 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-500 mb-4 shadow-inner">
-          <FileQuestion className="w-8 h-8 text-indigo-400/80" />
-        </div>
-        <h2 className="text-lg font-semibold text-slate-200 mb-2">
-          Nenhum artigo selecionado
-        </h2>
-        <p className="text-xs text-slate-400 max-w-sm mb-6 leading-relaxed">
-          Selecione uma página na barra lateral para ler ou editar, ou crie uma nova entrada para a sua wiki.
-        </p>
-        {!isReadOnly && (
-          <button
-            onClick={onCreatePage}
-            className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 rounded-lg transition shadow-md shadow-indigo-600/20"
-          >
-            <Plus className="w-4 h-4" />
-            Criar Novo Artigo
-          </button>
+      <main className="flex-1 bg-slate-950 flex flex-col items-center justify-center p-8 text-center select-none relative overflow-hidden">
+        {themeConfig?.bgImage && (
+          <div
+            className="absolute inset-0 bg-cover bg-center pointer-events-none z-0"
+            style={{
+              backgroundImage: `url(${themeConfig.bgImage})`,
+              opacity: (themeConfig.bgOpacity ?? 0.2) * 0.75,
+            }}
+          />
         )}
+        <div className="relative z-10 flex flex-col items-center">
+          <div
+            className="w-16 h-16 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-500 mb-4 shadow-inner"
+            style={themeConfig?.themeColor ? { borderColor: `${themeConfig.themeColor}50` } : {}}
+          >
+            <FileQuestion
+              className="w-8 h-8"
+              style={{ color: themeConfig?.themeColor || "#818cf8" }}
+            />
+          </div>
+          <h2 className="text-lg font-semibold text-slate-200 mb-2">
+            Nenhum artigo selecionado
+          </h2>
+          <p className="text-xs text-slate-400 max-w-sm mb-6 leading-relaxed">
+            Selecione uma página na barra lateral para ler ou editar, ou crie uma nova entrada para a sua wiki.
+          </p>
+          {!isReadOnly && (
+            <button
+              onClick={onCreatePage}
+              className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white rounded-lg transition shadow-md"
+              style={{
+                backgroundColor: themeConfig?.themeColor || "#6366f1",
+                boxShadow: `0 4px 14px ${themeConfig?.themeColor ? `${themeConfig.themeColor}30` : "rgba(99, 102, 241, 0.2)"}`,
+              }}
+            >
+              <Plus className="w-4 h-4" />
+              Criar Novo Artigo
+            </button>
+          )}
 
-        <div className="mt-12 p-4 bg-slate-900/60 border border-slate-800/80 rounded-xl max-w-md text-left text-xs text-slate-400 space-y-2">
-          <div className="font-semibold text-slate-300">💡 Dicas de Edição Fandom:</div>
-          <div>
-            • Clique no botão <strong>Infobox</strong> para adicionar fichas de personagens e tópicos.
-          </div>
-          <div>
-            • Use o botão <strong>Puxar Imagem (/assets)</strong> para reutilizar imagens já presentes.
-          </div>
-          <div>
-            • Conecte suas notas com <code className="bg-slate-800 text-indigo-300 px-1 py-0.5 rounded">[[Nome da Página]]</code>.
+          <div className="mt-12 p-4 bg-slate-900/60 border border-slate-800/80 rounded-xl max-w-md text-left text-xs text-slate-400 space-y-2 backdrop-blur-sm">
+            <div className="font-semibold text-slate-300">💡 Dicas de Edição Fandom:</div>
+            <div>
+              • Clique no botão <strong>Infobox</strong> para adicionar fichas de personagens e tópicos.
+            </div>
+            <div>
+              • Use o botão <strong>Puxar Imagem (/assets)</strong> para reutilizar imagens já presentes.
+            </div>
+            <div>
+              • Conecte suas notas com <code className="bg-slate-800 text-indigo-300 px-1 py-0.5 rounded">[[Nome da Página]]</code>.
+            </div>
           </div>
         </div>
       </main>
@@ -403,7 +451,10 @@ assets/foto2.png | Arte Promocional
   }
 
   return (
-    <main className="flex-1 bg-slate-950 flex flex-col overflow-hidden h-full">
+    <main
+      className="flex-1 bg-slate-950 flex flex-col overflow-hidden h-full"
+      style={themeStyles}
+    >
       {/* Banner de Modo Somente Leitura (Estilo Word Protected View) */}
       {isReadOnly && (
         <div className="bg-amber-950/80 border-b border-amber-800/80 px-4 py-2 flex items-center justify-between text-xs text-amber-200 shrink-0">
@@ -434,7 +485,14 @@ assets/foto2.png | Arte Promocional
         <div className="flex items-center gap-3 min-w-0">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-400 bg-cyan-950/80 border border-cyan-800/60 px-1.5 py-0.5 rounded">
+              <span
+                className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border"
+                style={{
+                  backgroundColor: "var(--wiki-theme-subtle)",
+                  borderColor: "var(--wiki-theme-border)",
+                  color: "var(--wiki-theme-light)",
+                }}
+              >
                 Artigo Fandom
               </span>
               <h1 className="text-sm font-bold text-slate-100 truncate">
@@ -470,9 +528,18 @@ assets/foto2.png | Arte Promocional
               onClick={() => setViewMode("preview")}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
                 viewMode === "preview"
-                  ? "bg-gradient-to-r from-indigo-600 to-indigo-500 text-white shadow-sm"
+                  ? "text-white shadow-sm"
                   : "text-slate-400 hover:text-slate-200"
               }`}
+              style={
+                viewMode === "preview"
+                  ? {
+                      background:
+                        "linear-gradient(135deg, var(--wiki-theme-dark), var(--wiki-theme-color))",
+                      boxShadow: "0 2px 8px var(--wiki-theme-glow)",
+                    }
+                  : undefined
+              }
               title="Visualizar Artigo Fandom"
             >
               <BookOpen className="w-3.5 h-3.5" />
@@ -484,9 +551,18 @@ assets/foto2.png | Arte Promocional
                   onClick={() => setViewMode("edit")}
                   className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
                     viewMode === "edit"
-                      ? "bg-gradient-to-r from-indigo-600 to-indigo-500 text-white shadow-sm"
+                      ? "text-white shadow-sm"
                       : "text-slate-400 hover:text-slate-200"
                   }`}
+                  style={
+                    viewMode === "edit"
+                      ? {
+                          background:
+                            "linear-gradient(135deg, var(--wiki-theme-dark), var(--wiki-theme-color))",
+                          boxShadow: "0 2px 8px var(--wiki-theme-glow)",
+                        }
+                      : undefined
+                  }
                   title="Editar Código Markdown"
                 >
                   <Edit3 className="w-3.5 h-3.5" />
@@ -496,9 +572,18 @@ assets/foto2.png | Arte Promocional
                   onClick={() => setViewMode("split")}
                   className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
                     viewMode === "split"
-                      ? "bg-gradient-to-r from-indigo-600 to-indigo-500 text-white shadow-sm"
+                      ? "text-white shadow-sm"
                       : "text-slate-400 hover:text-slate-200"
                   }`}
+                  style={
+                    viewMode === "split"
+                      ? {
+                          background:
+                            "linear-gradient(135deg, var(--wiki-theme-dark), var(--wiki-theme-color))",
+                          boxShadow: "0 2px 8px var(--wiki-theme-glow)",
+                        }
+                      : undefined
+                  }
                   title="Lado a Lado (Split View)"
                 >
                   <Columns className="w-3.5 h-3.5" />
@@ -515,9 +600,17 @@ assets/foto2.png | Arte Promocional
               disabled={!isDirty}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-xl transition shadow-sm ${
                 isDirty
-                  ? "bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white shadow-indigo-600/30"
+                  ? "text-white cursor-pointer active:brightness-90"
                   : "bg-slate-800 text-slate-500 border border-slate-700/40 cursor-default"
               }`}
+              style={
+                isDirty
+                  ? {
+                      backgroundColor: "var(--wiki-theme-color)",
+                      boxShadow: "0 2px 10px var(--wiki-theme-glow)",
+                    }
+                  : undefined
+              }
               title="Salvar alterações (Ctrl+S)"
             >
               <Save className="w-3.5 h-3.5" />
@@ -605,11 +698,40 @@ assets/foto2.png | Arte Promocional
             </>
           )}
 
-          {/* Botão Inserir Caixa de Aviso / Spoiler */}
+          {/* Botão Inserir Caixa de Spoiler Temática */}
+          <button
+            onClick={handleInsertSpoiler}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg transition shrink-0 border"
+            style={{
+              backgroundColor: "var(--wiki-theme-subtle)",
+              borderColor: "var(--wiki-theme-border)",
+              color: "var(--wiki-theme-light)",
+            }}
+            title="Inserir Caixa de Spoiler da Wiki"
+          >
+            <EyeOff className="w-3.5 h-3.5" />
+            <span>Spoiler</span>
+          </button>
+
+          {/* Botão Inserir Spoiler Inline ||texto|| */}
+          <button
+            onClick={() => insertTextAtCursor("||", "||", "spoiler")}
+            className="flex items-center gap-1 px-2 py-1 rounded text-xs transition shrink-0 border"
+            style={{
+              backgroundColor: "var(--wiki-theme-subtle)",
+              borderColor: "var(--wiki-theme-border)",
+              color: "var(--wiki-theme-light)",
+            }}
+            title="Inserir Spoiler Inline (||texto|| - clique para revelar)"
+          >
+            <span className="font-mono text-[11px]">||spoiler||</span>
+          </button>
+
+          {/* Botão Inserir Caixa de Aviso / Alerta */}
           <button
             onClick={handleInsertNotice}
             className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-amber-300 bg-amber-950/60 hover:bg-amber-900/60 border border-amber-800/60 rounded-lg transition shrink-0"
-            title="Inserir Caixa de Aviso / Spoiler"
+            title="Inserir Caixa de Aviso / Alerta"
           >
             <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
             <span>Aviso</span>
@@ -743,15 +865,29 @@ assets/foto2.png | Arte Promocional
         {(isReadOnly || viewMode === "preview" || viewMode === "split") && (
           <div
             onClick={handlePreviewClick}
-            className={`h-full overflow-y-auto bg-slate-900/25 custom-scrollbar ${
+            className={`h-full overflow-y-auto bg-slate-900/25 custom-scrollbar relative ${
               !isReadOnly && viewMode === "split" ? "w-1/2" : "w-full"
             }`}
           >
-            <div className={`${parseColumnEditor(content) ? "max-w-none" : "max-w-4xl"} mx-auto p-6 md:p-8`}>
+            {/* Imagem de Fundo Temática da Wiki (Wallpaper) */}
+            {themeConfig?.bgImage && (
+              <div
+                className="absolute inset-0 bg-cover bg-center bg-fixed pointer-events-none z-0"
+                style={{
+                  backgroundImage: `url(${themeConfig.bgImage})`,
+                  opacity: themeConfig.bgOpacity ?? 0.2,
+                }}
+              />
+            )}
+
+            <div className={`relative z-10 ${parseColumnEditor(content) ? "max-w-none" : "max-w-4xl"} mx-auto p-6 md:p-8`}>
               {/* Cabeçalho do Artigo Fandom */}
               <div className="border-b-2 border-slate-800 pb-4 mb-6">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-400 flex items-center gap-1">
+                  <span
+                    className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1"
+                    style={{ color: themeConfig?.themeColor || "#818cf8" }}
+                  >
                     <FileText className="w-3.5 h-3.5" /> Artigo de Base de Conhecimento
                   </span>
                 </div>

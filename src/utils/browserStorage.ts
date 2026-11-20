@@ -1,5 +1,11 @@
 import { unzipSync, zipSync } from "./zipCompat";
-import { FileNode } from "../types/wiki";
+import { FileNode, WikiThemeConfig } from "../types/wiki";
+
+export interface CreateWikiOptions {
+  themeColor?: string;
+  bgImageFile?: File | null;
+  bgOpacity?: number;
+}
 
 export interface IndexedDbWikiRoot {
   kind: "indexeddb";
@@ -205,7 +211,7 @@ async function parentAndName(path: string, create = false) {
   return { parent: await directoryAt(pathParts.join("/"), create), name };
 }
 
-async function createStoredWiki(name: string): Promise<IndexedDbWikiRoot> {
+async function createStoredWiki(name: string, options?: CreateWikiOptions): Promise<IndexedDbWikiRoot> {
   const safe = cleanPart(name);
   const db = await openDatabase();
   const id = crypto.randomUUID();
@@ -219,25 +225,113 @@ async function createStoredWiki(name: string): Promise<IndexedDbWikiRoot> {
     type: "text/markdown",
   } satisfies StoredFile);
   await transactionDone(transaction);
-  return { kind: "indexeddb", id, name: safe };
+  const root: IndexedDbWikiRoot = { kind: "indexeddb", id, name: safe };
+
+  let bgPath = "";
+  if (options?.bgImageFile) {
+    const rawExt = options.bgImageFile.name.split(".").pop() || "png";
+    const ext = rawExt.toLowerCase();
+    bgPath = `assets/wiki-background.${ext}`;
+    const buf = await options.bgImageFile.arrayBuffer();
+    await writeStoredFile(root, bgPath, buf, options.bgImageFile.type || "image/png");
+    imageUrls.set(bgPath, URL.createObjectURL(options.bgImageFile));
+  }
+
+  const config = {
+    name: safe,
+    themeColor: options?.themeColor || "#6366f1",
+    bgImage: bgPath,
+    bgOpacity: typeof options?.bgOpacity === "number" ? options.bgOpacity : 0.2,
+    createdAt: new Date().toISOString(),
+  };
+  await writeStoredFile(root, "wiki.json", encoder.encode(JSON.stringify(config, null, 2)).buffer, "application/json");
+
+  return root;
 }
 
-export async function createWiki(name: string): Promise<WikiRoot> {
+export async function createWiki(name: string, options?: CreateWikiOptions): Promise<WikiRoot> {
   const safe = cleanPart(name);
   if (!isFileSystemAccessSupported()) {
-    const root = await createStoredWiki(safe);
+    const root = await createStoredWiki(safe, options);
     pendingParent = null;
     return root;
   }
   if (!pendingParent) throw new Error("Selecione a pasta onde a wiki será criada.");
   const root = await pendingParent.getDirectoryHandle(safe, { create: true });
-  await root.getDirectoryHandle("assets", { create: true });
+  const assetsHandle = await root.getDirectoryHandle("assets", { create: true });
   const start = await root.getFileHandle("Início.md", { create: true });
   const writer = await start.createWritable();
   await writer.write(`# ${safe}\n\nBem-vindo à sua wiki!\n`);
   await writer.close();
+
+  let bgPath = "";
+  if (options?.bgImageFile) {
+    const rawExt = options.bgImageFile.name.split(".").pop() || "png";
+    const ext = rawExt.toLowerCase();
+    const bgFileName = `wiki-background.${ext}`;
+    bgPath = `assets/${bgFileName}`;
+    const bgHandle = await assetsHandle.getFileHandle(bgFileName, { create: true });
+    const bgWriter = await bgHandle.createWritable();
+    await bgWriter.write(await options.bgImageFile.arrayBuffer());
+    await bgWriter.close();
+    imageUrls.set(bgPath, URL.createObjectURL(options.bgImageFile));
+  }
+
+  const config = {
+    name: safe,
+    themeColor: options?.themeColor || "#6366f1",
+    bgImage: bgPath,
+    bgOpacity: typeof options?.bgOpacity === "number" ? options.bgOpacity : 0.2,
+    createdAt: new Date().toISOString(),
+  };
+  const configHandle = await root.getFileHandle("wiki.json", { create: true });
+  const configWriter = await configHandle.createWritable();
+  await configWriter.write(JSON.stringify(config, null, 2));
+  await configWriter.close();
+
   pendingParent = null;
   return root;
+}
+
+export async function readWikiConfig(): Promise<WikiThemeConfig | null> {
+  if (!wikiRoot) return null;
+  try {
+    let jsonText = "";
+    if (isIndexedDbRoot(wikiRoot)) {
+      const files = await getStoredFiles(wikiRoot);
+      const configFile = files.find(f => f.path === "wiki.json");
+      if (!configFile) return null;
+      jsonText = decoder.decode(configFile.data);
+    } else {
+      try {
+        const fileHandle = await wikiRoot.getFileHandle("wiki.json");
+        const file = await fileHandle.getFile();
+        jsonText = await file.text();
+      } catch {
+        return null;
+      }
+    }
+
+    if (!jsonText) return null;
+    const parsed = JSON.parse(jsonText);
+    const bgPath = parsed.bgImage || "";
+    let resolvedBg = "";
+    if (bgPath) {
+      resolvedBg = getAssetUrl(bgPath);
+      if (resolvedBg === bgPath) {
+        resolvedBg = await assetUrl(bgPath);
+      }
+    }
+
+    return {
+      themeColor: parsed.themeColor || "#6366f1",
+      bgImage: resolvedBg || bgPath,
+      bgOpacity: typeof parsed.bgOpacity === "number" ? parsed.bgOpacity : 0.2,
+    };
+  } catch (err) {
+    console.warn("Falha ao ler configuração da wiki:", err);
+    return null;
+  }
 }
 
 async function writeStoredFile(root: IndexedDbWikiRoot, path: string, data: ArrayBuffer, type: string) {
@@ -506,17 +600,73 @@ async function allWikiFiles(): Promise<Record<string, Uint8Array>> {
   return Object.fromEntries(files.map(file => [file.path, new Uint8Array(file.data)]));
 }
 
-export async function exportOpd() {
+export async function exportOpd(): Promise<boolean> {
   if (!wikiRoot) throw new Error("Nenhuma wiki aberta.");
   const files = await allWikiFiles();
   const bytes = zipSync(files);
+  const fileName = `${wikiRoot.name}.opd`;
+
+  // 1. Se estiver rodando dentro do Tauri Desktop Nativo
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const { invoke } = await import("@tauri-apps/api/core");
+      const targetPath = await save({
+        defaultPath: fileName,
+        filters: [
+          {
+            name: "Pacote de Wiki OPD (*.opd)",
+            extensions: ["opd", "zip"],
+          },
+        ],
+      });
+      if (!targetPath) {
+        return false; // Usuário cancelou a seleção do local
+      }
+      await invoke("write_binary_file", { path: targetPath, data: Array.from(bytes) });
+      return true;
+    } catch (tauriErr) {
+      console.warn("Falha no diálogo nativo do Tauri, tentando showSaveFilePicker/fallback:", tauriErr);
+    }
+  }
+
+  // 2. Se o navegador suportar showSaveFilePicker (Chrome, Edge, Opera, etc.)
+  if (typeof window !== "undefined" && typeof (window as any).showSaveFilePicker === "function") {
+    try {
+      const handle = await (window as any).showSaveFilePicker({
+        suggestedName: fileName,
+        types: [
+          {
+            description: "Pacote de Wiki OPD (*.opd)",
+            accept: {
+              "application/x-opd": [".opd"],
+              "application/zip": [".opd", ".zip"],
+            },
+          },
+        ],
+      });
+      if (!handle) return false;
+      const writable = await handle.createWritable();
+      await writable.write(bytes);
+      await writable.close();
+      return true;
+    } catch (pickerErr: any) {
+      if (pickerErr.name === "AbortError") {
+        return false; // Usuário cancelou
+      }
+      console.warn("showSaveFilePicker falhou, usando fallback clássico:", pickerErr);
+    }
+  }
+
+  // 3. Fallback clássico para navegadores sem API de diálogo de salvamento
   const blob = new Blob([bytes], { type: "application/zip" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `${wikiRoot.name}.opd`;
+  anchor.download = fileName;
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return true;
 }
 
 export async function listAssets(): Promise<{ path: string; name: string; url: string }[]> {

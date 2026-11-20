@@ -284,24 +284,50 @@ export function parseFandomMarkdown(
     return storeProtected(blockHtml);
   });
 
-  // 4. Processar Caixas de Aviso :::notice tipo="spoiler|info|warning|canon" ... :::
+  // 4. Processar Bloco Dedicado de Spoiler :::spoiler ... :::
+  content = content.replace(/:::spoiler(?:\s+titulo="([^"]+)")?([\s\S]*?):::/g, (_match, rawTitle, body) => {
+    const title = rawTitle || "Alerta de Spoiler";
+    const bodyHtml = renderCustomBody(body.trim(), currentWikiPath);
+
+    const blockHtml = normalizeHtmlBlock(`
+      <div class="fandom-notice fandom-themed-spoiler not-prose" data-fandom="spoiler">
+        <div class="fandom-notice-indicator"></div>
+        <div class="fandom-notice-content">
+          <div class="fandom-notice-header-row flex items-center gap-2 mb-1">
+            <span class="fandom-spoiler-badge">SPOILER</span>
+            <div class="fandom-notice-title font-bold">${marked.parseInline(title)}</div>
+          </div>
+          <div class="fandom-notice-body">${bodyHtml}</div>
+        </div>
+      </div>
+    `);
+
+    return storeProtected(blockHtml);
+  });
+
+  // 5. Processar Caixas de Aviso :::notice tipo="spoiler|info|warning|canon|theme" ... :::
   content = content.replace(/:::notice(?:\s+tipo="([^"]+)")?(?:\s+titulo="([^"]+)")?([\s\S]*?):::/g, (_match, rawType, rawTitle, body) => {
-    const type = (rawType || "info").toLowerCase();
+    const type = (rawType || "theme").toLowerCase();
+    const isSpoiler = type === "spoiler";
     const defaultTitles: Record<string, string> = {
       spoiler: "Alerta de Spoiler",
       warning: "Aviso Importante",
       info: "Informação Canônica",
       canon: "Conteúdo Oficial",
       wip: "Artigo em Construção",
+      theme: "Nota da Wiki",
     };
     const title = rawTitle || defaultTitles[type] || "Nota";
     const bodyHtml = renderCustomBody(body.trim(), currentWikiPath);
 
     const blockHtml = normalizeHtmlBlock(`
-      <div class="fandom-notice fandom-notice-${escapeAttribute(type)} not-prose" data-fandom="notice">
+      <div class="fandom-notice fandom-notice-${escapeAttribute(type)} ${isSpoiler ? "fandom-themed-spoiler" : ""} not-prose" data-fandom="notice">
         <div class="fandom-notice-indicator"></div>
         <div class="fandom-notice-content">
-          <div class="fandom-notice-title">${marked.parseInline(title)}</div>
+          <div class="fandom-notice-header-row flex items-center gap-2 mb-1">
+            ${isSpoiler ? `<span class="fandom-spoiler-badge">SPOILER</span>` : ""}
+            <div class="fandom-notice-title font-bold">${marked.parseInline(title)}</div>
+          </div>
           <div class="fandom-notice-body">${bodyHtml}</div>
         </div>
       </div>
@@ -365,7 +391,12 @@ export function parseFandomMarkdown(
     return `<span class="wiki-link-pill" data-wikilink="${encoded}">🔗 <span class="wiki-link-text">${cleanName}</span></span>`;
   });
 
-  // 8. Resolver imagens Markdown padrão ![Legenda](assets/...)
+  // 8. Converter Spoilers Inline ||texto|| estilo Discord/Fandom
+  content = content.replace(/\|\|([\s\S]+?)\|\|/g, (_match, inner) => {
+    return `<span class="fandom-inline-spoiler" title="Passe o mouse ou clique para revelar">${marked.parseInline(inner)}</span>`;
+  });
+
+  // 9. Resolver imagens Markdown padrão ![Legenda](assets/...)
   content = content.replace(/!\[(.*?)\]\((.*?)\)/g, (_match, alt, src) => {
     const resolved = resolveAssetUrl(src, currentWikiPath);
     return `<figure class="fandom-article-figure not-prose"><img src="${escapeAttribute(resolved)}" alt="${escapeAttribute(alt)}" class="fandom-article-img" />${alt ? `<figcaption class="fandom-article-figcaption">${alt}</figcaption>` : ""}</figure>`;

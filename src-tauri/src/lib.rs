@@ -5,7 +5,7 @@ use archive_service::{export_wiki_to_opd, import_opd_wiki};
 use fs_service::{
     copy_image_to_assets, create_new_folder, create_new_page, create_new_wiki,
     delete_file_or_folder, get_asset_data_url, read_markdown_file, read_wiki_directory,
-    save_markdown_file,
+    save_markdown_file, write_binary_file,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,7 +24,8 @@ pub fn run() {
             copy_image_to_assets,
             get_asset_data_url,
             export_wiki_to_opd,
-            import_opd_wiki
+            import_opd_wiki,
+            write_binary_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

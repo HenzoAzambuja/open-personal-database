@@ -125,6 +125,7 @@ export function App() {
           onCreatePage={() => createNewPage()}
           onOpenCreateWiki={() => setIsCreateWikiModalOpen(true)}
           onInsertImage={insertImage}
+          themeConfig={state.themeConfig}
         />
 
         {/* Indicador de Carregamento Flutuante */}

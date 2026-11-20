@@ -314,5 +314,19 @@ pub fn get_asset_data_url(wiki_path: String, relative_path: String) -> Result<St
     Ok(format!("data:{};base64,{}", mime, b64))
 }
 
+#[tauri::command]
+pub fn write_binary_file(path: String, data: Vec<u8>) -> Result<(), String> {
+    let target = Path::new(&path);
+    if let Some(parent) = target.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Falha ao criar diretório '{}': {}", parent.display(), e))?;
+        }
+    }
+    fs::write(target, &data)
+        .map_err(|e| format!("Falha ao gravar arquivo '{}': {}", path, e))?;
+    Ok(())
+}
+
 
 

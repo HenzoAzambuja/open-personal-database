@@ -5,6 +5,12 @@ export interface FileNode {
   children?: FileNode[];
 }
 
+export interface WikiThemeConfig {
+  themeColor?: string;
+  bgImage?: string;
+  bgOpacity?: number;
+}
+
 export interface WikiMetadata {
   name: string;
   path: string;
@@ -24,5 +30,6 @@ export interface WikiState {
   searchQuery: string;
   metadata: WikiMetadata | null;
   isReadOnly?: boolean;
+  themeConfig?: WikiThemeConfig | null;
 }
 

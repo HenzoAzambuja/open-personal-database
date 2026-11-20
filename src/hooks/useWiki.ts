@@ -15,6 +15,7 @@ export function useWiki() {
     searchQuery: '',
     metadata: null,
     isReadOnly: false,
+    themeConfig: null,
   });
   const [notification, setNotification] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
   const notificationTimeoutRef = useRef<number | null>(null);
@@ -136,13 +137,16 @@ export function useWiki() {
       activeFileTitle: null,
       isDirty: false,
       isReadOnly,
+      themeConfig: null,
     }));
     try {
       const tree = await storage.buildTree();
       await storage.preloadAssets();
+      const themeConfig = await storage.readWikiConfig();
       setState(p => ({
         ...p,
         fileTree: tree,
+        themeConfig,
         metadata: {
           name: root.name,
           path: root.name,
@@ -183,10 +187,14 @@ export function useWiki() {
     }
   }, [loadRoot, showNotification]);
 
-  const createNewWiki = useCallback(async (_parentPath: string, wikiName: string) => {
+  const createNewWiki = useCallback(async (
+    _parentPath: string,
+    wikiName: string,
+    themeOptions?: storage.CreateWikiOptions
+  ) => {
     setState(p => ({ ...p, isLoading: true }));
     try {
-      const root = await storage.createWiki(wikiName.trim());
+      const root = await storage.createWiki(wikiName.trim(), themeOptions);
       await loadRoot(root, true, false);
       showNotification(`Wiki "${wikiName.trim()}" criada com sucesso!`, 'success');
     } catch (e) {
@@ -298,8 +306,10 @@ export function useWiki() {
   const exportOpd = useCallback(async () => {
     try {
       if (state.isDirty) await saveCurrentPage();
-      await storage.exportOpd();
-      showNotification('Exportação .opd iniciada.', 'success');
+      const saved = await storage.exportOpd();
+      if (saved) {
+        showNotification('Wiki exportada com sucesso!', 'success');
+      }
     } catch (e) {
       showNotification(`Erro na exportação: ${(e as Error).message}`, 'error');
     }
